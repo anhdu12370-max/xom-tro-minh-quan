@@ -244,7 +244,7 @@ def get_email_credentials():
         pass
     return None, None
 
-def compress_image_to_base64(uploaded_file, max_width=640, quality=60):
+def compress_image_to_base64(uploaded_file, max_width=560, quality=52):
     try:
         img = Image.open(uploaded_file)
         if img.mode in ("RGBA", "P"):
@@ -253,17 +253,17 @@ def compress_image_to_base64(uploaded_file, max_width=640, quality=60):
         if w > max_width:
             new_h = int(h * (max_width / w))
             img = img.resize((max_width, new_h), Image.Resampling.LANCZOS)
-        for q_try in [quality, 48, 36, 28]:
+        for q_try in [quality, 42, 32, 24]:
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=q_try, optimize=True)
             b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-            if len(b64_str) <= 44000:
+            if len(b64_str) <= 42000:
                 return f"data:image/jpeg;base64,{b64_str}"
-        img = img.resize((420, int(img.size[1] * (420 / img.size[0]))), Image.Resampling.LANCZOS)
+        img = img.resize((400, int(img.size[1] * (400 / img.size[0]))), Image.Resampling.LANCZOS)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=35, optimize=True)
+        img.save(buf, format="JPEG", quality=30, optimize=True)
         b64_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-        return f"data:image/jpeg;base64,{b64_str[:44000]}"
+        return f"data:image/jpeg;base64,{b64_str[:42000]}"
     except Exception as e:
         st.error(f"Lỗi xử lý ảnh: {e}")
         return ""
@@ -405,7 +405,7 @@ def write_table(df, sheet_name, csv_file):
                 ws = sh.add_worksheet(title=sheet_name, rows="1000", cols="25")
             ws.clear()
             data_to_write = [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
-            ws.update(data_to_write)
+            ws.update(values=data_to_write, value_input_option="RAW")
             _fetch_gsheet_records.clear()
             return
         except Exception as e:
@@ -663,15 +663,21 @@ def load_rooms():
     df["Seri công tơ"] = df["Seri công tơ"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
     df["Ghi chú"] = df["Ghi chú"].fillna("").astype(str)
     df["Ảnh công tơ"] = df["Ảnh công tơ"].fillna("").astype(str)
-    # Tự động khôi phục ảnh đồng hồ từ sheet dự phòng "meter_photos" nếu cột Ảnh công tơ bị trống
-    if (df["Ảnh công tơ"].str.strip() == "").all():
+    # Tự động khôi phục ảnh đồng hồ từ sheet dự phòng "meter_photos" cho các phòng đang trống ảnh
+    if (df["Ảnh công tơ"].str.strip() == "").any():
         df_p_bak = read_table("meter_photos", "meter_photos.csv")
         if df_p_bak is not None and not df_p_bak.empty and "Phòng" in df_p_bak.columns and "Ảnh công tơ" in df_p_bak.columns:
-            photo_map = dict(zip(df_p_bak["Phòng"].astype(str), df_p_bak["Ảnh công tơ"].astype(str)))
-            restored_series = df["Phòng"].map(photo_map).fillna("")
-            if (restored_series.str.strip() != "").any():
-                df["Ảnh công tơ"] = restored_series
-                changed = True
+            photo_map = {
+                str(k).strip(): str(v).strip()
+                for k, v in zip(df_p_bak["Phòng"], df_p_bak["Ảnh công tơ"])
+                if str(v).strip().startswith("data:image")
+            }
+            for idx_row in df.index:
+                if not str(df.at[idx_row, "Ảnh công tơ"]).strip().startswith("data:image"):
+                    p_key = str(df.at[idx_row, "Phòng"]).strip()
+                    if p_key in photo_map:
+                        df.at[idx_row, "Ảnh công tơ"] = photo_map[p_key]
+                        changed = True
     for num_col in ["Tiền phòng", "Điện cũ", "Điện mới", "Tiền nước", "Tiền rác", "An ninh", "Tiền khác"]:
         df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0).astype(int)
     df["Đã thu"] = df["Đã thu"].apply(lambda x: str(x).strip().lower() in ["true", "1", "yes"])
