@@ -8,9 +8,39 @@ from PIL import Image
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+def get_vn_now():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Asia/Ho_Chi_Minh"))
+    except Exception:
+        return datetime.now(timezone(timedelta(hours=7)))
 
 st.set_page_config(page_title="Xóm Trọ Minh Quân", page_icon="🏠", layout="wide")
+import streamlit.components.v1 as components
+components.html("""<script>
+(function() {
+    const doc = window.parent.document;
+    if (!doc._mqEnterHooked) {
+        doc._mqEnterHooked = true;
+        doc.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                const active = doc.activeElement;
+                if (active && active.tagName === 'TEXTAREA') return;
+                const dialog = doc.querySelector('[data-testid="stDialog"]');
+                if (dialog) {
+                    const primaryBtn = dialog.querySelector('button[kind="primary"], button[data-testid="baseButton-primary"]');
+                    if (primaryBtn && !primaryBtn.disabled) {
+                        e.preventDefault();
+                        primaryBtn.click();
+                    }
+                }
+            }
+        }, true);
+    }
+})();
+</script>""", height=0)
 
 ROOMS_FILE = "rooms.csv"
 HISTORY_FILE = "history.csv"
@@ -148,7 +178,7 @@ Cảm ơn anh/chị đã thông báo cho Xóm Trọ Minh Quân!"""
 
 def send_feedback_to_admin(room_name, tenant_name, feedback_text):
     sender_email, app_password = get_email_credentials()
-    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+    now_str = get_vn_now().strftime("%d/%m/%Y %H:%M")
 
     # 1. Lưu phản hồi vào sheet riêng "feedback" trên Google Sheets (không đụng vào sheet rooms/history)
     df_fb = load_feedback()
@@ -825,14 +855,16 @@ def render_login_screen(df_rooms):
         login_tab_cus, login_tab_adm = st.tabs(["👤 Khách thuê (Xem hóa đơn & Ảnh đồng hồ)", "🔑 Chủ trọ (Admin)"])
 
         with login_tab_cus:
-            st.info("Chọn phòng của bạn và nhập **Mật khẩu phòng** do chủ trọ cung cấp để xem tiền phòng, ảnh đồng hồ điện & lịch sử.")
+            st.info("Chọn phòng của bạn và nhập **Mật khẩu phòng** do chủ trọ cung cấp (nhấn **Enter** hoặc bấm nút bên dưới để đăng nhập).")
             if df_rooms.empty:
                 st.warning("Chưa có danh sách phòng. Vui lòng liên hệ chủ trọ.")
             else:
-                room_list = df_rooms["Phòng"].tolist()
-                selected_room = st.selectbox("Chọn phòng của bạn:", room_list)
-                room_pass_input = st.text_input("Mật khẩu phòng:", type="password", placeholder="Nhập mật khẩu phòng...")
-                if st.button("🔓 Đăng nhập xem phòng", type="primary", use_container_width=True):
+                with st.form("customer_login_form", clear_on_submit=False):
+                    room_list = df_rooms["Phòng"].tolist()
+                    selected_room = st.selectbox("Chọn phòng của bạn:", room_list)
+                    room_pass_input = st.text_input("Mật khẩu phòng:", type="password", placeholder="Nhập mật khẩu phòng rồi nhấn Enter...")
+                    submit_cus = st.form_submit_button("🔓 Đăng nhập xem phòng", type="primary", use_container_width=True)
+                if submit_cus:
                     matched_row = df_rooms[df_rooms["Phòng"] == selected_room].iloc[0]
                     correct_pass = str(matched_row["Mật khẩu phòng"]).strip()
                     if room_pass_input.strip() == correct_pass:
@@ -843,10 +875,12 @@ def render_login_screen(df_rooms):
                         st.error("❌ Sai mật khẩu phòng! Vui lòng kiểm tra lại hoặc liên hệ chủ trọ.")
 
         with login_tab_adm:
-            st.info("Khu vực dành riêng cho **Chủ trọ** quản lý, cập nhật ảnh công tơ, nhập số điện và chốt sổ.")
-            admin_u_in = st.text_input("Tài khoản Admin:", placeholder="Nhập tài khoản...")
-            admin_p_in = st.text_input("Mật khẩu Admin:", type="password", placeholder="Nhập mật khẩu...")
-            if st.button("🔑 Đăng nhập Quản trị", type="primary", use_container_width=True):
+            st.info("Khu vực dành riêng cho **Chủ trọ** quản lý (nhấn **Enter** sau khi nhập mật khẩu để đăng nhập nhanh).")
+            with st.form("admin_login_form", clear_on_submit=False):
+                admin_u_in = st.text_input("Tài khoản Admin:", placeholder="Nhập tài khoản...")
+                admin_p_in = st.text_input("Mật khẩu Admin:", type="password", placeholder="Nhập mật khẩu rồi nhấn Enter...")
+                submit_adm = st.form_submit_button("🔑 Đăng nhập Quản trị", type="primary", use_container_width=True)
+            if submit_adm:
                 adm_user, adm_pass = get_admin_credentials()
                 if admin_u_in.strip() == adm_user and admin_p_in.strip() == adm_pass:
                     st.session_state.role = "admin"
@@ -1160,7 +1194,7 @@ def confirm_close_month_dialog(df_rooms, calc_df, thang_ghi, gia_dien):
                 if drop_col in record_df.columns:
                     record_df = record_df.drop(columns=[drop_col])
             record_df.insert(0, "Kỳ thu", thang_ghi)
-            record_df.insert(1, "Ngày chốt", datetime.now().strftime("%d/%m/%Y %H:%M"))
+            record_df.insert(1, "Ngày chốt", get_vn_now().strftime("%d/%m/%Y %H:%M"))
             record_df["Đơn giá điện"] = gia_dien
 
             old_hist = load_history()
