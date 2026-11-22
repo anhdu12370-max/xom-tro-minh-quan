@@ -33,6 +33,69 @@ def backup_meter_photo(room_name, b64_img):
         pass
 
 
+
+def render_notification_bell_and_history(df_fb, is_admin=True, room_filter=None):
+    if df_fb is None or df_fb.empty:
+        st.markdown("""
+        <div class="floating-bell-alert" title="Chuông thông báo phản hồi">
+            <span class="floating-bell-icon idle">🔔</span>
+            <span>Thông báo</span>
+            <span class="floating-bell-badge">0</span>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    view_fb = df_fb.copy()
+    if room_filter:
+        view_fb = view_fb[view_fb["Phòng"].astype(str) == str(room_filter)]
+
+    if is_admin:
+        new_count = int((view_fb["Trạng thái"] == "Mới gửi").sum()) if not view_fb.empty else 0
+    else:
+        # Khách thuê thấy nốt đỏ cảnh báo nếu có phản hồi mới từ chủ trọ hoặc đang xử lý
+        new_count = int(((view_fb["Phản hồi của chủ trọ"].astype(str).str.strip() != "") & (view_fb["Trạng thái"] != "Đã xử lý xong")).sum()) if not view_fb.empty else 0
+
+    if new_count > 0:
+        rooms_str = ", ".join(view_fb[view_fb["Trạng thái"] == "Mới gửi"]["Phòng"].astype(str).unique().tolist()) if is_admin else (room_filter or "Phòng của bạn")
+        label_txt = f"Phản hồi mới ({rooms_str})" if is_admin else "Cập nhật mới"
+        st.markdown(f"""
+        <div class="floating-bell-alert" title="Có thông báo phản hồi mới">
+            <span class="floating-red-dot"></span>
+            <span class="floating-bell-icon has-alert">🔔</span>
+            <span>{label_txt}</span>
+            <span class="floating-bell-badge">{new_count}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="floating-bell-alert" title="Chuông thông báo phản hồi">
+            <span class="floating-bell-icon idle">🔔</span>
+            <span>Thông báo</span>
+            <span class="floating-bell-badge">0</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Hiển thị lịch sử đầy đủ thời gian ngay trên giao diện để dễ theo dõi
+    if not view_fb.empty:
+        exp_title = f"🔔 Lịch sử thông báo phản hồi đầy đủ thời gian ({len(view_fb)} mục)" + (f" — 🔴 {new_count} cảnh báo mới" if new_count > 0 else "")
+        with st.expander(exp_title, expanded=(new_count > 0)):
+            for _, r_item in view_fb.iterrows():
+                tg = r_item.get("Thời gian", "")
+                p_name = r_item.get("Phòng", "")
+                k_name = r_item.get("Khách thuê", "")
+                nd = r_item.get("Nội dung phản hồi", "")
+                tt = r_item.get("Trạng thái", "")
+                tl = str(r_item.get("Phản hồi của chủ trọ", "")).strip()
+                is_new_item = (is_admin and tt == "Mới gửi") or ((not is_admin) and tl != "" and tt != "Đã xử lý xong")
+                dot_prefix = "🔴 " if is_new_item else "⚪ "
+                reply_line = f"<br/><span style='color:#047857;'>↳ <strong>Chủ trọ trả lời:</strong> {tl}</span>" if tl else ""
+                st.markdown(f"""
+                <div style="background:rgba(255,255,255,0.88); border-left:4px solid {'#ef4444' if is_new_item else '#0ea5e9'}; border-radius:10px; padding:10px 14px; margin-bottom:8px; font-size:13.5px; color:#0f172a;">
+                    {dot_prefix}<strong>[{tg}]</strong> — <strong>{p_name}</strong> ({k_name}) • <span style="font-weight:700; color:{'#dc2626' if tt=='Mới gửi' else '#0284c7'};">{tt}</span>
+                    <div style="margin-top:4px;">📝 {nd}{reply_line}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
 def load_feedback():
     df_fb = read_table("feedback", FEEDBACK_FILE)
     expected_cols = ["Thời gian", "Phòng", "Khách thuê", "Nội dung phản hồi", "Trạng thái", "Phản hồi của chủ trọ"]
@@ -534,25 +597,31 @@ st.markdown("""
     }
 
 
-    /* Chuông thông báo đỏ nổi ở góc trên bên phải màn hình khi có phản hồi mới */
-    @keyframes bell-shake {
+
+    /* Chuông thông báo đỏ luôn hiển thị ở góc trên bên phải màn hình */
+    @keyframes bell-shake-v12 {
         0%, 100% { transform: rotate(0deg); }
-        15% { transform: rotate(14deg); }
-        30% { transform: rotate(-14deg); }
+        15% { transform: rotate(15deg); }
+        30% { transform: rotate(-15deg); }
         45% { transform: rotate(10deg); }
         60% { transform: rotate(-10deg); }
-        75% { transform: rotate(4deg); }
+        75% { transform: rotate(5deg); }
+    }
+    @keyframes red-dot-pulse {
+        0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.85); }
+        70% { transform: scale(1.12); box-shadow: 0 0 0 8px rgba(255, 255, 255, 0); }
+        100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
     }
     .floating-bell-alert {
         position: fixed;
-        top: 64px;
-        right: 22px;
+        top: 58px;
+        right: 20px;
         z-index: 999999;
-        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
         color: #ffffff;
         padding: 10px 16px;
         border-radius: 999px;
-        box-shadow: 0 8px 22px rgba(220, 38, 38, 0.45);
+        box-shadow: 0 8px 22px rgba(185, 28, 28, 0.45);
         border: 2px solid #ffffff;
         display: flex;
         align-items: center;
@@ -561,18 +630,31 @@ st.markdown("""
         font-size: 13.5px;
         cursor: default;
     }
-    .floating-bell-icon {
+    .floating-bell-icon.has-alert {
         display: inline-block;
         font-size: 18px;
-        animation: bell-shake 1.4s infinite;
+        animation: bell-shake-v12 1.3s infinite;
+    }
+    .floating-bell-icon.idle {
+        display: inline-block;
+        font-size: 17px;
     }
     .floating-bell-badge {
         background-color: #ffffff;
-        color: #dc2626;
+        color: #b91c1c;
         font-weight: 900;
         font-size: 12px;
         padding: 2px 8px;
         border-radius: 999px;
+    }
+    .floating-red-dot {
+        width: 11px;
+        height: 11px;
+        background-color: #ff1e1e;
+        border: 2px solid #ffffff;
+        border-radius: 50%;
+        display: inline-block;
+        animation: red-dot-pulse 1.4s infinite;
     }
 
     /* Tùy chỉnh Tabs nổi bật */
@@ -778,6 +860,7 @@ def render_login_screen(df_rooms):
 # ==========================================
 def render_customer_view(df_rooms, gia_dien, thang_ghi):
     my_room_name = st.session_state.customer_room
+    render_notification_bell_and_history(load_feedback(), is_admin=False, room_filter=my_room_name)
     matched = df_rooms[df_rooms["Phòng"] == my_room_name]
     if matched.empty:
         st.error("Không tìm thấy dữ liệu phòng của bạn. Vui lòng đăng nhập lại.")
@@ -1106,15 +1189,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
     df_fb_admin = load_feedback()
     new_fb_count = int((df_fb_admin["Trạng thái"] == "Mới gửi").sum()) if not df_fb_admin.empty else 0
 
-    if new_fb_count > 0:
-        latest_rooms = ", ".join(df_fb_admin[df_fb_admin["Trạng thái"] == "Mới gửi"]["Phòng"].astype(str).unique().tolist())
-        st.markdown(f"""
-        <div class="floating-bell-alert" title="Có phản hồi mới từ khách thuê">
-            <span class="floating-bell-icon">🔔</span>
-            <span>Phản hồi mới ({latest_rooms})</span>
-            <span class="floating-bell-badge">{new_fb_count}</span>
-        </div>
-        """, unsafe_allow_html=True)
+    render_notification_bell_and_history(df_fb_admin, is_admin=True)
 
     storage_mode = "☁️ Google Sheets (Cloud)" if get_gsheet_client() is not None else "💻 File CSV trên máy tính"
     sender_mail, _ = get_email_credentials()
