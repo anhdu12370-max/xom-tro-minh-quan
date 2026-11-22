@@ -67,10 +67,10 @@ def backup_meter_photo(room_name, b64_img):
 def render_notification_bell_and_history(df_fb, is_admin=True, room_filter=None):
     if df_fb is None or df_fb.empty:
         st.markdown("""
-        <div class="floating-bell-alert" title="Chuông thông báo phản hồi">
+        <div class="floating-bell-alert clean" title="Không có cảnh báo">
             <span class="floating-bell-icon idle">🔔</span>
-            <span>Thông báo</span>
-            <span class="floating-bell-badge">0</span>
+            <span>Đã xử lý hết</span>
+            <span class="floating-bell-badge clean">0</span>
         </div>
         """, unsafe_allow_html=True)
         return
@@ -79,49 +79,85 @@ def render_notification_bell_and_history(df_fb, is_admin=True, room_filter=None)
     if room_filter:
         view_fb = view_fb[view_fb["Phòng"].astype(str) == str(room_filter)]
 
+    statuses = view_fb["Trạng thái"].astype(str).str.strip()
     if is_admin:
-        new_count = int((view_fb["Trạng thái"] == "Mới gửi").sum()) if not view_fb.empty else 0
+        red_items = view_fb[statuses == "Mới gửi"]
+        yellow_items = view_fb[statuses == "Đang xử lý"]
     else:
-        # Khách thuê thấy nốt đỏ cảnh báo nếu có phản hồi mới từ chủ trọ hoặc đang xử lý
-        new_count = int(((view_fb["Phản hồi của chủ trọ"].astype(str).str.strip() != "") & (view_fb["Trạng thái"] != "Đã xử lý xong")).sum()) if not view_fb.empty else 0
+        has_reply = view_fb["Phản hồi của chủ trọ"].astype(str).str.strip() != ""
+        red_items = view_fb[(statuses == "Mới gửi") & (~has_reply)]
+        yellow_items = view_fb[(statuses == "Đang xử lý") | ((statuses == "Mới gửi") & has_reply)]
 
-    if new_count > 0:
-        rooms_str = ", ".join(view_fb[view_fb["Trạng thái"] == "Mới gửi"]["Phòng"].astype(str).unique().tolist()) if is_admin else (room_filter or "Phòng của bạn")
-        label_txt = f"Phản hồi mới ({rooms_str})" if is_admin else "Cập nhật mới"
+    red_count = int(len(red_items))
+    yellow_count = int(len(yellow_items))
+
+    if red_count > 0:
+        rooms_str = ", ".join(red_items["Phòng"].astype(str).unique().tolist()) if is_admin else (room_filter or "Phòng của bạn")
+        label_txt = f"Phản hồi mới ({rooms_str})" if is_admin else "Cảnh báo mới"
         st.markdown(f"""
-        <div class="floating-bell-alert" title="Có thông báo phản hồi mới">
+        <div class="floating-bell-alert red" title="Có cảnh báo phản hồi mới">
             <span class="floating-red-dot"></span>
             <span class="floating-bell-icon has-alert">🔔</span>
             <span>{label_txt}</span>
-            <span class="floating-bell-badge">{new_count}</span>
+            <span class="floating-bell-badge red">{red_count}</span>
+        </div>
+        """, unsafe_allow_html=True)
+    elif yellow_count > 0:
+        rooms_str = ", ".join(yellow_items["Phòng"].astype(str).unique().tolist()) if is_admin else (room_filter or "Phòng của bạn")
+        label_txt = f"Đang xử lý ({rooms_str})" if is_admin else "Đang xử lý"
+        st.markdown(f"""
+        <div class="floating-bell-alert yellow" title="Đang xử lý phản hồi">
+            <span class="floating-yellow-dot"></span>
+            <span class="floating-bell-icon has-alert">🔔</span>
+            <span>{label_txt}</span>
+            <span class="floating-bell-badge yellow">{yellow_count}</span>
         </div>
         """, unsafe_allow_html=True)
     else:
         st.markdown("""
-        <div class="floating-bell-alert" title="Chuông thông báo phản hồi">
+        <div class="floating-bell-alert clean" title="Tất cả đã xử lý xong">
             <span class="floating-bell-icon idle">🔔</span>
-            <span>Thông báo</span>
-            <span class="floating-bell-badge">0</span>
+            <span>Đã xử lý</span>
+            <span class="floating-bell-badge clean">0</span>
         </div>
         """, unsafe_allow_html=True)
 
     # Hiển thị lịch sử đầy đủ thời gian ngay trên giao diện để dễ theo dõi
     if not view_fb.empty:
-        exp_title = f"🔔 Lịch sử thông báo phản hồi đầy đủ thời gian ({len(view_fb)} mục)" + (f" — 🔴 {new_count} cảnh báo mới" if new_count > 0 else "")
-        with st.expander(exp_title, expanded=(new_count > 0)):
+        status_summary = ""
+        if red_count > 0:
+            status_summary = f" — 🔴 {red_count} mới gửi"
+        elif yellow_count > 0:
+            status_summary = f" — 🟡 {yellow_count} đang xử lý"
+        else:
+            status_summary = " — 🟢 Đã xử lý xong"
+
+        exp_title = f"🔔 Lịch sử thông báo phản hồi đầy đủ thời gian ({len(view_fb)} mục){status_summary}"
+        with st.expander(exp_title, expanded=(red_count > 0 or yellow_count > 0)):
             for _, r_item in view_fb.iterrows():
                 tg = r_item.get("Thời gian", "")
                 p_name = r_item.get("Phòng", "")
                 k_name = r_item.get("Khách thuê", "")
                 nd = r_item.get("Nội dung phản hồi", "")
-                tt = r_item.get("Trạng thái", "")
+                tt = str(r_item.get("Trạng thái", "")).strip()
                 tl = str(r_item.get("Phản hồi của chủ trọ", "")).strip()
-                is_new_item = (is_admin and tt == "Mới gửi") or ((not is_admin) and tl != "" and tt != "Đã xử lý xong")
-                dot_prefix = "🔴 " if is_new_item else "⚪ "
+                if tt == "Mới gửi":
+                    dot_prefix = "🔴 "
+                    border_col = "#ef4444"
+                    st_col = "#dc2626"
+                elif tt == "Đang xử lý":
+                    dot_prefix = "🟡 "
+                    border_col = "#f59e0b"
+                    st_col = "#d97706"
+                else:
+                    dot_prefix = "🟢 "
+                    border_col = "#10b981"
+                    st_col = "#059669"
+
                 reply_line = f"<br/><span style='color:#047857;'>↳ <strong>Chủ trọ trả lời:</strong> {tl}</span>" if tl else ""
                 st.markdown(f"""
-                <div style="background:rgba(255,255,255,0.88); border-left:4px solid {'#ef4444' if is_new_item else '#0ea5e9'}; border-radius:10px; padding:10px 14px; margin-bottom:8px; font-size:13.5px; color:#0f172a;">
-                    {dot_prefix}<strong>[{tg}]</strong> — <strong>{p_name}</strong> ({k_name}) • <span style="font-weight:700; color:{'#dc2626' if tt=='Mới gửi' else '#0284c7'};">{tt}</span>
+                <div style="background:rgba(255,255,255,0.88); border-left:4px solid {border_col}; border-radius:10px; padding:10px 14px; margin-bottom:8px; font-size:13.5px; color:#0f172a;">
+                    {dot_prefix}<strong>[{tg}]</strong> — <strong>{p_name}</strong> ({k_name}) • <span style="font-weight:700; color:{st_col};">{tt}</span>
                     <div style="margin-top:4px;">📝 {nd}{reply_line}</div>
                 </div>
                 """, unsafe_allow_html=True)
@@ -660,6 +696,25 @@ st.markdown("""
         font-size: 13.5px;
         cursor: default;
     }
+    .floating-bell-alert.yellow {
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        color: #0f172a;
+        box-shadow: 0 8px 22px rgba(217, 119, 6, 0.38);
+    }
+    .floating-bell-alert.clean {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: #ffffff;
+        box-shadow: 0 8px 22px rgba(5, 150, 105, 0.35);
+    }
+    .floating-yellow-dot {
+        width: 11px;
+        height: 11px;
+        background-color: #fef08a;
+        border: 2px solid #0f172a;
+        border-radius: 50%;
+        display: inline-block;
+        animation: red-dot-pulse 1.5s infinite;
+    }
     .floating-bell-icon.has-alert {
         display: inline-block;
         font-size: 18px;
@@ -676,6 +731,14 @@ st.markdown("""
         font-size: 12px;
         padding: 2px 8px;
         border-radius: 999px;
+    }
+    .floating-bell-badge.yellow {
+        background-color: #ffffff;
+        color: #b45309;
+    }
+    .floating-bell-badge.clean {
+        background-color: #ffffff;
+        color: #047857;
     }
     .floating-red-dot {
         width: 11px;
@@ -1318,7 +1381,13 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 del_idx = room_options[selected_del_label]
                 confirm_delete_room_dialog(del_idx, df.iloc[del_idx])
 
-    fb_tab_label = f"💬 Phản hồi khách ({new_fb_count} mới)" if new_fb_count > 0 else "💬 Phản hồi khách"
+    processing_fb_count = int((df_fb_admin["Trạng thái"].astype(str).str.strip() == "Đang xử lý").sum()) if not df_fb_admin.empty else 0
+    if new_fb_count > 0:
+        fb_tab_label = f"💬 Phản hồi khách (🔴 {new_fb_count} mới)"
+    elif processing_fb_count > 0:
+        fb_tab_label = f"💬 Phản hồi khách (🟡 {processing_fb_count} đang xử lý)"
+    else:
+        fb_tab_label = "💬 Phản hồi khách (🟢 Đã xử lý)"
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📋 Nhập số điện & Thu tiền",
