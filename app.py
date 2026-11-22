@@ -481,6 +481,12 @@ if "role" not in st.session_state:
     st.session_state.role = None
 if "customer_room" not in st.session_state:
     st.session_state.customer_room = None
+if "prev_rooms_df" not in st.session_state:
+    st.session_state.prev_rooms_df = None
+if "admin_tab" not in st.session_state:
+    st.session_state.admin_tab = "📋 Nhập số điện & Thu tiền"
+if "admin_prev_tab" not in st.session_state:
+    st.session_state.admin_prev_tab = None
 
 # ==========================================
 # GIAO DIỆN MÀU SẮC SINH ĐỘNG & HIỆN ĐẠI
@@ -1036,6 +1042,7 @@ def confirm_instant_change_dialog(edited_df, changes_list):
     c1, c2 = st.columns(2)
     with c1:
         if st.button("✅ Đồng ý & Lưu luôn", type="primary", use_container_width=True):
+            st.session_state.prev_rooms_df = load_rooms().copy()
             write_table(edited_df, "rooms", ROOMS_FILE)
             st.session_state.editor_key += 1
             st.toast("Đã lưu thay đổi!", icon="✅")
@@ -1272,16 +1279,59 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 confirm_delete_room_dialog(del_idx, df.iloc[del_idx])
 
     fb_tab_label = f"💬 Phản hồi khách ({new_fb_count} mới)" if new_fb_count > 0 else "💬 Phản hồi khách"
-
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab_names = [
         "📋 Nhập số điện & Thu tiền",
         "📸 Ảnh đồng hồ từng phòng",
         "📊 Biểu đồ & Gửi Zalo / Email",
         "🗂️ Lịch sử các tháng trước",
         fb_tab_label
-    ])
+    ]
+    if st.session_state.admin_tab not in tab_names:
+        st.session_state.admin_tab = tab_names[0]
+    if st.session_state.admin_prev_tab is not None and st.session_state.admin_prev_tab not in tab_names:
+        st.session_state.admin_prev_tab = tab_names[0]
 
-    with tab1:
+    nav_col_tabs, nav_col_back, nav_col_undo = st.columns([5.2, 1.4, 1.6])
+    with nav_col_tabs:
+        chosen_tab = st.radio(
+            "Điều hướng mục quản lý:",
+            tab_names,
+            index=tab_names.index(st.session_state.admin_tab),
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+        if chosen_tab != st.session_state.admin_tab:
+            st.session_state.admin_prev_tab = st.session_state.admin_tab
+            st.session_state.admin_tab = chosen_tab
+            st.rerun()
+
+    with nav_col_back:
+        can_go_back_tab = (
+            st.session_state.admin_prev_tab is not None
+            and st.session_state.admin_prev_tab != st.session_state.admin_tab
+        )
+        if st.button("⬅️ Quay lại Tab cũ", disabled=not can_go_back_tab, use_container_width=True, help="Quay trở lại tab bạn vừa xem trước đó"):
+            prev_t = st.session_state.admin_prev_tab
+            st.session_state.admin_prev_tab = st.session_state.admin_tab
+            st.session_state.admin_tab = prev_t
+            st.rerun()
+
+    with nav_col_undo:
+        has_prev_snapshot = st.session_state.prev_rooms_df is not None and not st.session_state.prev_rooms_df.empty
+        undo_label = "↩️ Hoàn tác lần lưu trước" if has_prev_snapshot else "↩️ Hủy ô đang nhập"
+        if st.button(undo_label, use_container_width=True, help="Hủy thao tác đang nhập dở hoặc khôi phục lại dữ liệu phòng trước lần lưu gần nhất"):
+            if has_prev_snapshot:
+                restored_df = st.session_state.prev_rooms_df.copy()
+                st.session_state.prev_rooms_df = None
+                write_table(restored_df, "rooms", ROOMS_FILE)
+                st.session_state.editor_key += 1
+                st.toast("Đã hoàn tác về dữ liệu trước lần lưu gần nhất!", icon="↩️")
+            else:
+                st.session_state.editor_key += 1
+                st.toast("Đã hủy các ô đang nhập chưa lưu!", icon="↩️")
+            st.rerun()
+
+    if st.session_state.admin_tab == tab_names[0]:
         st.info("💡 Chỉnh sửa bất kỳ ô nào trên bảng dưới đây — phần mềm sẽ **hỏi xác nhận và tự động lưu ngay lập tức**. Khi bấm **Chốt sổ**, cột **Điện mới** sẽ tự động nhảy sang **Điện cũ** của tháng tiếp theo.")
         display_edit_cols = [c for c in df.columns if c != "Ảnh công tơ"]
         edited_sub_df = st.data_editor(
@@ -1406,7 +1456,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
     # ==========================================
     # TAB 2: TẢI & XEM ẢNH ĐỒNG HỒ ĐIỆN TỪNG PHÒNG
     # ==========================================
-    with tab2:
+    elif st.session_state.admin_tab == tab_names[1]:
         st.subheader(f"📸 Bảng ảnh chụp đồng hồ công tơ điện — Kỳ {thang_ghi}")
         st.info("Tải ảnh chụp mặt đồng hồ điện của từng phòng lên đây. Khách thuê khi đăng nhập bằng mật khẩu phòng của mình sẽ nhìn thấy trực tiếp bức ảnh này để đối chiếu minh bạch.")
 
@@ -1456,6 +1506,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                             if st.button(f"💾 Lưu ảnh đồng hồ cho {phong_r}", key=f"save_img_{idx_r}", type="primary", use_container_width=True):
                                 b64_img = compress_image_to_base64(up_file)
                                 if b64_img:
+                                    st.session_state.prev_rooms_df = df.copy()
                                     df_upd = df.copy()
                                     df_upd.at[idx_r, "Ảnh công tơ"] = b64_img
                                     write_table(df_upd, "rooms", ROOMS_FILE)
@@ -1463,7 +1514,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                                     st.toast(f"Đã lưu ảnh đồng hồ {phong_r}!", icon="📸")
                                     st.rerun()
 
-    with tab3:
+    elif st.session_state.admin_tab == tab_names[2]:
         col_chart, col_zalo = st.columns([1.2, 1])
         with col_chart:
             st.subheader("📊 Biểu đồ chi phí & doanh thu theo phòng")
@@ -1502,7 +1553,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 st.info("Hoặc bấm biểu tượng Copy ở góc phải khung dưới để dán gửi Zalo:")
                 st.code(msg, language="text")
 
-    with tab4:
+    elif st.session_state.admin_tab == tab_names[3]:
         hist_df = load_history()
         if not hist_df.empty:
             st.subheader("📈 Biểu đồ doanh thu qua các kỳ đã chốt")
@@ -1538,7 +1589,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
         else:
             st.info("Chưa có dữ liệu lịch sử nào được chốt sổ.")
 
-    with tab5:
+    elif st.session_state.admin_tab == tab_names[4]:
         st.subheader("💬 Danh sách phản hồi & Trả lời khách thuê")
         df_fb_view = load_feedback()
         if df_fb_view.empty:
