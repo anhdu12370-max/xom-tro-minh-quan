@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 st.set_page_config(page_title="Xóm Trọ Minh Quân", page_icon="🏠", layout="wide")
@@ -9,9 +12,9 @@ ROOMS_FILE = "rooms.csv"
 HISTORY_FILE = "history.csv"
 CONFIG_FILE = "config.csv"
 
-# Tài khoản Admin mặc định (nên đổi trong Secrets khi đưa lên mạng)
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "minhquan2026"
+DEFAULT_APP_URL = "https://xom-tro-minh-quan-pxg4pzand8apstxfa7aw66.streamlit.app"
 
 def get_admin_credentials():
     try:
@@ -21,7 +24,61 @@ def get_admin_credentials():
     except Exception:
         return DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASS
 
-# Kiểm tra xem có cấu hình Google Sheets trong Streamlit Secrets không
+def get_email_credentials():
+    try:
+        sender = str(st.secrets["email"]["sender_email"]).strip()
+        app_pwd = str(st.secrets["email"]["app_password"]).replace(" ", "").strip()
+        if sender and app_pwd:
+            return sender, app_pwd
+    except Exception:
+        pass
+    return None, None
+
+def send_invoice_email(to_email, subject, body_text):
+    sender_email, app_password = get_email_credentials()
+    if not sender_email or not app_password:
+        return False, "Chưa cấu hình [email] trong Secrets của Streamlit Cloud."
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = f"Xóm Trọ Minh Quân <{sender_email}>"
+        msg["To"] = to_email
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body_text, "plain", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
+            server.login(sender_email, app_password)
+            server.sendmail(sender_email, to_email, msg.as_string())
+        return True, "Thành công"
+    except Exception as e:
+        return False, str(e)
+
+def build_invoice_message(row_p, thang_ghi, gia_dien):
+    seri_line = f" (Công tơ: {row_p['Seri công tơ']})" if str(row_p.get('Seri công tơ', '')).strip() else ""
+    khac_line = ""
+    if int(row_p.get('Tiền khác', 0)) != 0 or str(row_p.get('Ghi chú', '')).strip():
+        note_txt = f" ({row_p['Ghi chú']})" if str(row_p.get('Ghi chú', '')).strip() else ""
+        khac_line = f"\n• Khoản khác{note_txt}: {int(row_p.get('Tiền khác', 0)):,.0f} đ"
+
+    trang_thai = "✅ Đã thanh toán" if row_p.get("Đã thu", False) else "⏳ Chưa thanh toán"
+
+    return f"""📢 THÔNG BÁO TIỀN PHÒNG XÓM TRỌ MINH QUÂN - KỲ {thang_ghi}
+🏠 Phòng: {row_p['Phòng']} ({row_p['Khách thuê']}){seri_line}
+📌 Trạng thái: {trang_thai}
+------------------------
+• Tiền thuê phòng: {int(row_p['Tiền phòng']):,.0f} đ
+• Chỉ số điện: {int(row_p['Điện cũ']):,.0f} ➔ {int(row_p['Điện mới']):,.0f} ({int(row_p['Số kWh']):,.0f} kWh)
+• Tiền điện ({gia_dien:,.0f}đ/kWh): {int(row_p['Tiền điện']):,.0f} đ
+• Tiền nước: {int(row_p['Tiền nước']):,.0f} đ
+• Tiền rác: {int(row_p['Tiền rác']):,.0f} đ
+• Phí an ninh: {int(row_p['An ninh']):,.0f} đ{khac_line}
+------------------------
+💰 TỔNG CỘNG CẦN THANH TOÁN: {int(row_p['Tổng cộng']):,.0f} đ
+
+🌐 Tra cứu hóa đơn & lịch sử online tại: {DEFAULT_APP_URL}
+🔑 Mật khẩu phòng của bạn: {row_p['Mật khẩu phòng']}
+
+Anh/chị vui lòng thanh toán sớm giúp Xóm Trọ Minh Quân nhé. Xin cảm ơn!"""
+
 def get_gsheet_client():
     try:
         if "gcp_service_account" in st.secrets and "sheet_url" in st.secrets:
@@ -63,7 +120,7 @@ def write_table(df, sheet_name, csv_file):
             try:
                 ws = sh.worksheet(sheet_name)
             except Exception:
-                ws = sh.add_worksheet(title=sheet_name, rows="1000", cols="20")
+                ws = sh.add_worksheet(title=sheet_name, rows="1000", cols="25")
             ws.clear()
             data_to_write = [df.columns.tolist()] + df.fillna("").astype(str).values.tolist()
             ws.update(data_to_write)
@@ -72,15 +129,13 @@ def write_table(df, sheet_name, csv_file):
             st.error(f"Lỗi ghi Google Sheets: {e}")
     df.to_csv(csv_file, index=False)
 
-# Khởi tạo session state
 if "editor_key" not in st.session_state:
     st.session_state.editor_key = 0
 if "role" not in st.session_state:
-    st.session_state.role = None  # "admin" hoặc "customer"
+    st.session_state.role = None
 if "customer_room" not in st.session_state:
     st.session_state.customer_room = None
 
-# CSS tùy chỉnh giao diện hiện đại
 st.markdown("""
 <style>
     .stApp {
@@ -130,7 +185,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Quản lý cấu hình chung (đơn giá điện & kỳ thu tiền)
 def load_config():
     df_cfg = read_table("config", CONFIG_FILE)
     if not df_cfg.empty and "gia_dien" in df_cfg.columns and "thang_ghi" in df_cfg.columns:
@@ -144,23 +198,26 @@ def save_config(gia_dien, thang_ghi):
     df_cfg = pd.DataFrame([{"gia_dien": int(gia_dien), "thang_ghi": str(thang_ghi)}])
     write_table(df_cfg, "config", CONFIG_FILE)
 
-# Quản lý danh sách phòng (có thêm cột Mật khẩu phòng)
 def load_rooms():
     default_cols = {
         "Phòng": "Phòng mới",
         "Khách thuê": "",
+        "Email khách": "",
         "Mật khẩu phòng": "123456",
+        "Seri công tơ": "",
         "Tiền phòng": 2500000,
         "Điện cũ": 0,
         "Điện mới": 0,
         "Tiền nước": 100000,
         "Tiền rác": 30000,
         "An ninh": 20000,
+        "Tiền khác": 0,
+        "Ghi chú": "",
         "Đã thu": False
     }
     ordered_cols = [
-        "Phòng", "Khách thuê", "Mật khẩu phòng", "Tiền phòng",
-        "Điện cũ", "Điện mới", "Tiền nước", "Tiền rác", "An ninh", "Đã thu"
+        "Phòng", "Khách thuê", "Email khách", "Mật khẩu phòng", "Seri công tơ", "Tiền phòng",
+        "Điện cũ", "Điện mới", "Tiền nước", "Tiền rác", "An ninh", "Tiền khác", "Ghi chú", "Đã thu"
     ]
     df = read_table("rooms", ROOMS_FILE)
     if not df.empty:
@@ -172,8 +229,11 @@ def load_rooms():
         df = df[ordered_cols]
         df["Phòng"] = df["Phòng"].astype(str)
         df["Khách thuê"] = df["Khách thuê"].fillna("").astype(str)
+        df["Email khách"] = df["Email khách"].fillna("").astype(str).str.strip()
         df["Mật khẩu phòng"] = df["Mật khẩu phòng"].fillna("123456").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
-        for num_col in ["Tiền phòng", "Điện cũ", "Điện mới", "Tiền nước", "Tiền rác", "An ninh"]:
+        df["Seri công tơ"] = df["Seri công tơ"].fillna("").astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+        df["Ghi chú"] = df["Ghi chú"].fillna("").astype(str)
+        for num_col in ["Tiền phòng", "Điện cũ", "Điện mới", "Tiền nước", "Tiền rác", "An ninh", "Tiền khác"]:
             df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0).astype(int)
         df["Đã thu"] = df["Đã thu"].apply(lambda x: str(x).strip().lower() in ["true", "1", "yes"])
         if changed:
@@ -181,8 +241,8 @@ def load_rooms():
         return df
 
     df = pd.DataFrame([
-        {"Phòng": "Phòng 101", "Khách thuê": "Nguyễn Văn A", "Mật khẩu phòng": "101123", "Tiền phòng": 2500000, "Điện cũ": 1200, "Điện mới": 1285, "Tiền nước": 100000, "Tiền rác": 30000, "An ninh": 20000, "Đã thu": False},
-        {"Phòng": "Phòng 102", "Khách thuê": "Trần Thị B", "Mật khẩu phòng": "102123", "Tiền phòng": 2800000, "Điện cũ": 850, "Điện mới": 940, "Tiền nước": 100000, "Tiền rác": 30000, "An ninh": 20000, "Đã thu": False},
+        {"Phòng": "Phòng 101", "Khách thuê": "Nguyễn Văn A", "Email khách": "", "Mật khẩu phòng": "101123", "Seri công tơ": "CT-101", "Tiền phòng": 2500000, "Điện cũ": 1200, "Điện mới": 1285, "Tiền nước": 100000, "Tiền rác": 30000, "An ninh": 20000, "Tiền khác": 0, "Ghi chú": "", "Đã thu": False},
+        {"Phòng": "Phòng 102", "Khách thuê": "Trần Thị B", "Email khách": "", "Mật khẩu phòng": "102123", "Seri công tơ": "CT-102", "Tiền phòng": 2800000, "Điện cũ": 850, "Điện mới": 940, "Tiền nước": 100000, "Tiền rác": 30000, "An ninh": 20000, "Tiền khác": 0, "Ghi chú": "", "Đã thu": False},
     ])
     write_table(df, "rooms", ROOMS_FILE)
     return df
@@ -190,18 +250,19 @@ def load_rooms():
 def load_history():
     df_h = read_table("history", HISTORY_FILE)
     if not df_h.empty:
-        for num_col in ["Tiền phòng", "Điện cũ", "Điện mới", "Số kWh", "Tiền điện", "Tiền nước", "Tiền rác", "An ninh", "Dịch vụ (Nước+Rác+AN)", "Tổng cộng", "Đơn giá điện"]:
+        for num_col in ["Tiền phòng", "Điện cũ", "Điện mới", "Số kWh", "Tiền điện", "Tiền nước", "Tiền rác", "An ninh", "Tiền khác", "Dịch vụ (Nước+Rác+AN)", "Tổng cộng", "Đơn giá điện"]:
             if num_col in df_h.columns:
                 df_h[num_col] = pd.to_numeric(df_h[num_col], errors="coerce").fillna(0)
-        if "Phòng" in df_h.columns:
-            df_h["Phòng"] = df_h["Phòng"].astype(str)
+        for str_col in ["Phòng", "Seri công tơ", "Ghi chú", "Email khách"]:
+            if str_col in df_h.columns:
+                df_h[str_col] = df_h[str_col].fillna("").astype(str).str.replace(r"\.0$", "", regex=True)
     return df_h
 
 def save_history(df_h):
     write_table(df_h, "history", HISTORY_FILE)
 
 # ==========================================
-# MÀN HÌNH ĐĂNG NHẬP (PHÂN QUYỀN 2 TÀI KHOẢN)
+# MÀN HÌNH ĐĂNG NHẬP
 # ==========================================
 def render_login_screen(df_rooms):
     col_left, col_mid, col_right = st.columns([1, 1.4, 1])
@@ -243,7 +304,7 @@ def render_login_screen(df_rooms):
                     st.error("❌ Tài khoản hoặc mật khẩu Admin không chính xác!")
 
 # ==========================================
-# GIAO DIỆN KHÁCH THUÊ (CHỈ XEM, KHÔNG SỬA)
+# GIAO DIỆN KHÁCH THUÊ (CHỈ XEM)
 # ==========================================
 def render_customer_view(df_rooms, gia_dien, thang_ghi):
     my_room_name = st.session_state.customer_room
@@ -259,11 +320,15 @@ def render_customer_view(df_rooms, gia_dien, thang_ghi):
     so_kwh = max(0, int(row["Điện mới"]) - int(row["Điện cũ"]))
     tien_dien = so_kwh * gia_dien
     tien_dv = int(row["Tiền nước"]) + int(row["Tiền rác"]) + int(row["An ninh"])
-    tong_cong = int(row["Tiền phòng"]) + tien_dien + tien_dv
+    tien_khac = int(row.get("Tiền khác", 0))
+    ghi_chu = str(row.get("Ghi chú", "")).strip()
+    seri_ct = str(row.get("Seri công tơ", "")).strip()
+    tong_cong = int(row["Tiền phòng"]) + tien_dien + tien_dv + tien_khac
 
     with st.sidebar:
         st.header("👤 Tài khoản Khách thuê")
-        st.success(f"Đang xem: **{my_room_name}**\n\nKhách thuê: **{row['Khách thuê']}**")
+        seri_info = f"\n\n🔌 Seri công tơ: **{seri_ct}**" if seri_ct else ""
+        st.success(f"Đang xem: **{my_room_name}**\n\nKhách thuê: **{row['Khách thuê']}**{seri_info}")
         st.caption("🔒 Chế độ chỉ xem (không có quyền chỉnh sửa dữ liệu).")
         if st.button("🚪 Đăng xuất", use_container_width=True):
             st.session_state.role = None
@@ -272,7 +337,8 @@ def render_customer_view(df_rooms, gia_dien, thang_ghi):
 
     st.title(f"🏠 Xóm Trọ Minh Quân — {my_room_name}")
     trang_thai_text = "✅ ĐÃ THANH TOÁN" if row["Đã thu"] else "⏳ CHƯA THANH TOÁN"
-    st.markdown(f"### 📋 Hóa đơn kỳ {thang_ghi} | Trạng thái: **{trang_thai_text}**")
+    seri_badge = f" | 🔌 Công tơ: `{seri_ct}`" if seri_ct else ""
+    st.markdown(f"### 📋 Hóa đơn kỳ {thang_ghi}{seri_badge} | Trạng thái: **{trang_thai_text}**")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -292,11 +358,12 @@ def render_customer_view(df_rooms, gia_dien, thang_ghi):
         </div>
         """, unsafe_allow_html=True)
     with c3:
+        khac_sub = f" • Khác {tien_khac:,.0f}" if tien_khac != 0 else ""
         st.markdown(f"""
         <div class="metric-card service">
-            <div class="metric-title">💧 Nước, Rác & An ninh</div>
-            <div class="metric-value">{tien_dv:,.0f} đ</div>
-            <div class="metric-sub">Nước {row['Tiền nước']:,.0f} • Rác {row['Tiền rác']:,.0f} • AN {row['An ninh']:,.0f}</div>
+            <div class="metric-title">💧 Dịch vụ & Phí khác</div>
+            <div class="metric-value">{(tien_dv + tien_khac):,.0f} đ</div>
+            <div class="metric-sub">Nước {row['Tiền nước']:,.0f} • Rác {row['Tiền rác']:,.0f} • AN {row['An ninh']:,.0f}{khac_sub}</div>
         </div>
         """, unsafe_allow_html=True)
     with c4:
@@ -308,13 +375,16 @@ def render_customer_view(df_rooms, gia_dien, thang_ghi):
         </div>
         """, unsafe_allow_html=True)
 
+    if tien_khac != 0 or ghi_chu:
+        st.info(f"📝 **Chi tiết khoản thu khác / Ghi chú:** {tien_khac:,.0f} đ — {ghi_chu or 'Không có ghi chú thêm'}")
+
     st.divider()
     st.subheader(f"🗂️ Lịch sử đóng tiền & tiêu thụ điện của riêng {my_room_name}")
     hist_df = load_history()
     if not hist_df.empty and "Phòng" in hist_df.columns:
         my_hist = hist_df[hist_df["Phòng"] == my_room_name].copy()
         if not my_hist.empty:
-            cols_show = [c for c in ["Kỳ thu", "Ngày chốt", "Điện cũ", "Điện mới", "Số kWh", "Tiền điện", "Tiền nước", "Tiền rác", "An ninh", "Tiền phòng", "Tổng cộng", "Đã thu"] if c in my_hist.columns]
+            cols_show = [c for c in ["Kỳ thu", "Ngày chốt", "Seri công tơ", "Điện cũ", "Điện mới", "Số kWh", "Tiền điện", "Tiền nước", "Tiền rác", "An ninh", "Tiền khác", "Ghi chú", "Tiền phòng", "Tổng cộng", "Đã thu"] if c in my_hist.columns]
             st.dataframe(my_hist[cols_show], use_container_width=True, hide_index=True)
 
             if "Kỳ thu" in my_hist.columns and "Số kWh" in my_hist.columns:
@@ -327,7 +397,7 @@ def render_customer_view(df_rooms, gia_dien, thang_ghi):
         st.info("Chưa có dữ liệu lịch sử các tháng trước.")
 
 # ==========================================
-# CÁC HÀM & HỘP THOẠI DÀNH CHO ADMIN
+# CÁC HỘP THOẠI DÀNH CHO ADMIN
 # ==========================================
 def get_changes_summary(orig_df, new_df):
     changes = []
@@ -367,11 +437,11 @@ def confirm_instant_change_dialog(edited_df, changes_list):
 @st.dialog("⚠️ Xác nhận thêm phòng mới")
 def confirm_add_room_dialog(new_room_data):
     st.write("Bạn có chắc chắn muốn **thêm phòng mới** này vào danh sách không?")
-    info_text = f"""**Phòng:** {new_room_data['Phòng']} | **Khách thuê:** {new_room_data['Khách thuê'] or 'Chưa có'}
+    info_text = f"""**Phòng:** {new_room_data['Phòng']} | **Khách thuê:** {new_room_data['Khách thuê'] or 'Chưa có'} | **Email:** `{new_room_data['Email khách'] or 'Chưa nhập'}`
 
-**Mật khẩu phòng:** `{new_room_data['Mật khẩu phòng']}` | **Tiền phòng:** {new_room_data['Tiền phòng']:,.0f} đ | **Điện đầu:** {new_room_data['Điện cũ']}
+**Seri công tơ:** `{new_room_data['Seri công tơ'] or 'Chưa nhập'}` | **Mật khẩu phòng:** `{new_room_data['Mật khẩu phòng']}` | **Tiền phòng:** {new_room_data['Tiền phòng']:,.0f} đ
 
-**Dịch vụ:** Nước {new_room_data['Tiền nước']:,.0f}đ • Rác {new_room_data['Tiền rác']:,.0f}đ • An ninh {new_room_data['An ninh']:,.0f}đ"""
+**Điện đầu:** {new_room_data['Điện cũ']} | **Dịch vụ:** Nước {new_room_data['Tiền nước']:,.0f}đ • Rác {new_room_data['Tiền rác']:,.0f}đ • An ninh {new_room_data['An ninh']:,.0f}đ • Khác {new_room_data['Tiền khác']:,.0f}đ"""
     st.info(info_text)
     c1, c2 = st.columns(2)
     with c1:
@@ -403,17 +473,66 @@ def confirm_delete_room_dialog(room_idx, room_info):
         if st.button("❌ Giữ lại", use_container_width=True):
             st.rerun()
 
+@st.dialog("📧 Xác nhận gửi Email hóa đơn hàng loạt")
+def confirm_batch_email_dialog(calc_df, thang_ghi, gia_dien):
+    valid_rooms = calc_df[calc_df["Email khách"].astype(str).str.contains("@", na=False)]
+    if valid_rooms.empty:
+        st.warning("Chưa có phòng nào được nhập địa chỉ Email hợp lệ (có ký tự @). Hãy điền Email khách vào bảng trước!")
+        if st.button("Đóng", use_container_width=True):
+            st.rerun()
+        return
+
+    st.write(f"Hệ thống sẽ tự động gửi hóa đơn **kỳ {thang_ghi}** tới **{len(valid_rooms)} phòng** sau:")
+    for _, r in valid_rooms.iterrows():
+        st.info(f"🏠 **{r['Phòng']}** ({r['Khách thuê']}) ➔ `{r['Email khách']}` — Tổng: **{int(r['Tổng cộng']):,.0f} đ**")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("🚀 Gửi Email ngay", type="primary", use_container_width=True):
+            ok_list, fail_list = [], []
+            progress = st.progress(0)
+            total = len(valid_rooms)
+            for idx_step, (_, r) in enumerate(valid_rooms.iterrows(), start=1):
+                subj = f"[Xóm Trọ Minh Quân] Thông báo tiền phòng kỳ {thang_ghi} - {r['Phòng']}"
+                body = build_invoice_message(r, thang_ghi, gia_dien)
+                success, err = send_invoice_email(r["Email khách"], subj, body)
+                if success:
+                    ok_list.append(f"{r['Phòng']} ({r['Email khách']})")
+                else:
+                    fail_list.append(f"{r['Phòng']}: {err}")
+                progress.progress(idx_step / total)
+
+            if ok_list:
+                st.success(f"✅ Đã gửi thành công {len(ok_list)} email:\n- " + "\n- ".join(ok_list))
+            if fail_list:
+                st.error("❌ Các phòng gửi lỗi:\n- " + "\n- ".join(fail_list))
+    with c2:
+        if st.button("❌ Hủy", use_container_width=True):
+            st.rerun()
+
 @st.dialog("🔒 Xác nhận chốt sổ & chuyển kỳ mới")
 def confirm_close_month_dialog(df_rooms, calc_df, thang_ghi, gia_dien):
     st.write(f"Bạn có chắc chắn muốn **CHỐT SỔ KỲ {thang_ghi}** không?")
     close_info = f"""Sau khi xác nhận:
-1. Toàn bộ số liệu kỳ **{thang_ghi}** sẽ được lưu vào **Lịch sử các tháng trước**.
+1. Toàn bộ số liệu kỳ **{thang_ghi}** (bao gồm số seri công tơ, tiền khác & ghi chú) sẽ được lưu vào **Lịch sử các tháng trước**.
 2. Chỉ số **Điện mới** sẽ tự động chuyển thành **Điện cũ** cho tháng tiếp theo.
-3. Trạng thái **Đã thu** sẽ được đặt lại về chưa thu."""
+3. **Tiền khác**, **Ghi chú** và trạng thái **Đã thu** sẽ được đặt lại về 0 / trống cho kỳ mới."""
     st.info(close_info)
+
+    valid_emails = calc_df[calc_df["Email khách"].astype(str).str.contains("@", na=False)]
+    auto_send_mail = False
+    if not valid_emails.empty:
+        auto_send_mail = st.checkbox(f"📧 Đồng thời tự động gửi hóa đơn kỳ {thang_ghi} qua Email cho {len(valid_emails)} phòng đã có email", value=True)
+
     c1, c2 = st.columns(2)
     with c1:
         if st.button("✅ Chốt sổ ngay", type="primary", use_container_width=True):
+            if auto_send_mail and not valid_emails.empty:
+                for _, r in valid_emails.iterrows():
+                    subj = f"[Xóm Trọ Minh Quân] Thông báo tiền phòng kỳ {thang_ghi} - {r['Phòng']}"
+                    body = build_invoice_message(r, thang_ghi, gia_dien)
+                    send_invoice_email(r["Email khách"], subj, body)
+
             record_df = calc_df.copy()
             if "Mật khẩu phòng" in record_df.columns:
                 record_df = record_df.drop(columns=["Mật khẩu phòng"])
@@ -429,6 +548,8 @@ def confirm_close_month_dialog(df_rooms, calc_df, thang_ghi, gia_dien):
 
             next_df = df_rooms.copy()
             next_df["Điện cũ"] = next_df["Điện mới"]
+            next_df["Tiền khác"] = 0
+            next_df["Ghi chú"] = ""
             next_df["Đã thu"] = False
             write_table(next_df, "rooms", ROOMS_FILE)
             st.session_state.editor_key += 1
@@ -444,10 +565,12 @@ def confirm_close_month_dialog(df_rooms, calc_df, thang_ghi, gia_dien):
 # ==========================================
 def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
     storage_mode = "☁️ Google Sheets (Cloud)" if get_gsheet_client() is not None else "💻 File CSV trên máy tính"
+    sender_mail, _ = get_email_credentials()
+    mail_status = f"📧 Gmail tự động: **{sender_mail}**" if sender_mail else "⚠️ Chưa cấu hình Gmail tự động"
     st.title("🏠 Xóm Trọ Minh Quân - Quản Trị Chủ Trọ")
 
     with st.sidebar:
-        st.success(f"🔑 Quyền: **Chủ trọ (Admin)**\n\nLưu trữ: {storage_mode}")
+        st.success(f"🔑 Quyền: **Chủ trọ (Admin)**\n\nLưu trữ: {storage_mode}\n\n{mail_status}")
         if st.button("🚪 Đăng xuất", use_container_width=True):
             st.session_state.role = None
             st.rerun()
@@ -466,6 +589,8 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
         st.subheader("➕ Thêm phòng mới")
         ten_phong = st.text_input("Tên phòng (VD: Phòng 103)")
         khach_thue = st.text_input("Tên khách thuê")
+        email_khach_moi = st.text_input("Email khách thuê (VD: khach@gmail.com)")
+        seri_cong_to_moi = st.text_input("Số seri công tơ điện (VD: 24051988)")
         mk_phong_moi = st.text_input("Mật khẩu xem phòng (cho khách)", value="123456")
         gia_phong_moi = st.number_input("Giá thuê phòng (VNĐ)", min_value=0, value=2500000, step=100000)
         so_dien_dau = st.number_input("Chỉ số điện ban đầu", min_value=0, value=0)
@@ -478,6 +603,9 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
         with c_s3:
             gia_an_ninh_moi = st.number_input("An ninh", min_value=0, value=20000, step=5000)
 
+        gia_khac_moi = st.number_input("Tiền khác (VNĐ - có thể nhập âm để giảm trừ)", value=0, step=10000)
+        ghi_chu_moi = st.text_input("Ghi chú khoản tiền khác (VD: Sửa vòi nước, cọc...)")
+
         if st.button("Thêm phòng", use_container_width=True):
             if not ten_phong.strip():
                 st.warning("Vui lòng nhập Tên phòng trước khi bấm Thêm!")
@@ -485,13 +613,17 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 confirm_add_room_dialog({
                     "Phòng": ten_phong.strip(),
                     "Khách thuê": khach_thue.strip(),
+                    "Email khách": email_khach_moi.strip(),
                     "Mật khẩu phòng": mk_phong_moi.strip() or "123456",
+                    "Seri công tơ": seri_cong_to_moi.strip(),
                     "Tiền phòng": gia_phong_moi,
                     "Điện cũ": so_dien_dau,
                     "Điện mới": so_dien_dau,
                     "Tiền nước": gia_nuoc_moi,
                     "Tiền rác": gia_rac_moi,
                     "An ninh": gia_an_ninh_moi,
+                    "Tiền khác": gia_khac_moi,
+                    "Ghi chú": ghi_chu_moi.strip(),
                     "Đã thu": False
                 })
 
@@ -504,23 +636,27 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 del_idx = room_options[selected_del_label]
                 confirm_delete_room_dialog(del_idx, df.iloc[del_idx])
 
-    tab1, tab2, tab3 = st.tabs(["📋 Nhập số điện & Thu tiền", "📊 Biểu đồ & Gửi Zalo", "🗂️ Lịch sử các tháng trước"])
+    tab1, tab2, tab3 = st.tabs(["📋 Nhập số điện & Thu tiền", "📊 Biểu đồ & Gửi Zalo / Email", "🗂️ Lịch sử các tháng trước"])
 
     with tab1:
-        st.info("💡 Chỉnh sửa bất kỳ ô nào trên bảng dưới đây (bao gồm cả **Mật khẩu phòng** cấp cho khách thuê) — phần mềm sẽ **hỏi xác nhận và tự động lưu ngay lập tức**.")
+        st.info("💡 Chỉnh sửa bất kỳ ô nào trên bảng dưới đây (bao gồm **Email khách**, **Seri công tơ**, **Tiền khác** và **Ghi chú**) — phần mềm sẽ **hỏi xác nhận và tự động lưu ngay lập tức**.")
         edited_df = st.data_editor(
             df,
             key=f"room_editor_{st.session_state.editor_key}",
             num_rows="fixed",
             use_container_width=True,
             column_config={
+                "Email khách": st.column_config.TextColumn(help="Địa chỉ Gmail của khách để hệ thống tự động gửi hóa đơn hàng tháng"),
                 "Mật khẩu phòng": st.column_config.TextColumn(help="Mật khẩu riêng để khách phòng này đăng nhập xem hóa đơn"),
+                "Seri công tơ": st.column_config.TextColumn(help="Số seri in trên mặt công tơ điện để đối chiếu tránh ghi nhầm phòng"),
                 "Tiền phòng": st.column_config.NumberColumn(format="%d đ"),
                 "Điện cũ": st.column_config.NumberColumn(min_value=0, step=1),
                 "Điện mới": st.column_config.NumberColumn(min_value=0, step=1),
                 "Tiền nước": st.column_config.NumberColumn(format="%d đ", min_value=0, step=10000),
                 "Tiền rác": st.column_config.NumberColumn(format="%d đ", min_value=0, step=5000),
                 "An ninh": st.column_config.NumberColumn(format="%d đ", min_value=0, step=5000),
+                "Tiền khác": st.column_config.NumberColumn(format="%d đ", step=10000, help="Khoản phát sinh thêm hoặc giảm trừ (nhập số âm nếu giảm tiền)"),
+                "Ghi chú": st.column_config.TextColumn(width="medium", help="Ghi rõ lý do khoản tiền khác (VD: Sửa khóa, thay bóng đèn, trừ tiền cọc...)"),
             }
         )
 
@@ -532,14 +668,15 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
         calc_df["Số kWh"] = calc_df["Điện mới"] - calc_df["Điện cũ"]
         calc_df["Tiền điện"] = calc_df["Số kWh"].apply(lambda x: x * gia_dien if x >= 0 else 0)
         calc_df["Dịch vụ (Nước+Rác+AN)"] = calc_df["Tiền nước"] + calc_df["Tiền rác"] + calc_df["An ninh"]
-        calc_df["Tổng cộng"] = calc_df["Tiền phòng"] + calc_df["Tiền điện"] + calc_df["Dịch vụ (Nước+Rác+AN)"]
+        calc_df["Tổng cộng"] = calc_df["Tiền phòng"] + calc_df["Tiền điện"] + calc_df["Dịch vụ (Nước+Rác+AN)"] + calc_df["Tiền khác"]
 
         if (calc_df["Số kWh"] < 0).any():
             st.error("⚠️ Cảnh báo: Có phòng đang có Số điện mới nhỏ hơn Số điện cũ! Vui lòng kiểm tra lại.")
 
         tong_dien = calc_df["Tiền điện"].sum()
         tong_kwh = calc_df["Số kWh"].clip(lower=0).sum()
-        tong_dich_vu = calc_df["Dịch vụ (Nước+Rác+AN)"].sum()
+        tong_dich_vu_va_khac = calc_df["Dịch vụ (Nước+Rác+AN)"].sum() + calc_df["Tiền khác"].sum()
+        tong_khac = calc_df["Tiền khác"].sum()
         tong_phong = calc_df["Tiền phòng"].sum()
         tong_thu = calc_df["Tổng cộng"].sum()
         so_phong_da_thu = calc_df["Đã thu"].sum()
@@ -556,11 +693,12 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
             </div>
             """, unsafe_allow_html=True)
         with c2:
+            sub_dv = f"Dịch vụ + Tiền khác ({tong_khac:,.0f} đ)" if tong_khac != 0 else "Tổng phí dịch vụ các phòng"
             st.markdown(f"""
             <div class="metric-card service">
-                <div class="metric-title">💧 Nước, Rác & An ninh</div>
-                <div class="metric-value">{tong_dich_vu:,.0f} đ</div>
-                <div class="metric-sub">Tổng phí dịch vụ các phòng</div>
+                <div class="metric-title">💧 Dịch vụ & Tiền khác</div>
+                <div class="metric-value">{tong_dich_vu_va_khac:,.0f} đ</div>
+                <div class="metric-sub">{sub_dv}</div>
             </div>
             """, unsafe_allow_html=True)
         with c3:
@@ -588,63 +726,75 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 return ["background-color: #fee2e2; color: #991b1b"] * len(row)
             return [""] * len(row)
 
-        display_cols = ["Phòng", "Khách thuê", "Số kWh", "Tiền điện", "Tiền nước", "Tiền rác", "An ninh", "Tiền phòng", "Tổng cộng", "Đã thu"]
+        display_cols = ["Phòng", "Khách thuê", "Seri công tơ", "Số kWh", "Tiền điện", "Tiền nước", "Tiền rác", "An ninh", "Tiền khác", "Ghi chú", "Tiền phòng", "Tổng cộng", "Đã thu"]
         styled_df = calc_df[display_cols].style.apply(highlight_status, axis=1).format({
             "Số kWh": "{:,.0f}",
             "Tiền điện": "{:,.0f} đ",
             "Tiền nước": "{:,.0f} đ",
             "Tiền rác": "{:,.0f} đ",
             "An ninh": "{:,.0f} đ",
+            "Tiền khác": "{:,.0f} đ",
             "Tiền phòng": "{:,.0f} đ",
             "Tổng cộng": "{:,.0f} đ"
         })
         st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
         st.divider()
-        if st.button("✅ Chốt sổ tháng này & Chuyển kỳ mới", type="primary", use_container_width=True):
-            if (calc_df["Số kWh"] < 0).any():
-                st.error("Không thể chốt sổ vì đang có phòng bị âm số điện!")
-            else:
-                confirm_close_month_dialog(df, calc_df, thang_ghi, gia_dien)
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("📧 Gửi hóa đơn Email cho tất cả phòng", use_container_width=True):
+                if (calc_df["Số kWh"] < 0).any():
+                    st.error("Không thể gửi hóa đơn vì đang có phòng bị âm số điện!")
+                else:
+                    confirm_batch_email_dialog(calc_df, thang_ghi, gia_dien)
+        with col_btn2:
+            if st.button("✅ Chốt sổ tháng này & Chuyển kỳ mới", type="primary", use_container_width=True):
+                if (calc_df["Số kWh"] < 0).any():
+                    st.error("Không thể chốt sổ vì đang có phòng bị âm số điện!")
+                else:
+                    confirm_close_month_dialog(df, calc_df, thang_ghi, gia_dien)
 
     with tab2:
         col_chart, col_zalo = st.columns([1.2, 1])
         with col_chart:
             st.subheader("📊 Biểu đồ chi phí & doanh thu theo phòng")
             if not calc_df.empty:
-                chart_data = calc_df.set_index("Phòng")[["Tiền phòng", "Tiền điện", "Dịch vụ (Nước+Rác+AN)"]]
+                chart_df = calc_df.copy()
+                chart_df["Dịch vụ & Khác"] = chart_df["Dịch vụ (Nước+Rác+AN)"] + chart_df["Tiền khác"]
+                chart_data = chart_df.set_index("Phòng")[["Tiền phòng", "Tiền điện", "Dịch vụ & Khác"]]
                 st.bar_chart(chart_data, color=["#3b82f6", "#f59e0b", "#06b6d4"])
                 st.caption("Biểu đồ số điện tiêu thụ (kWh) từng phòng:")
                 kwh_chart = calc_df.set_index("Phòng")[["Số kWh"]]
                 st.bar_chart(kwh_chart, color="#10b981")
 
         with col_zalo:
-            st.subheader("💬 Tạo tin nhắn báo tiền gửi Zalo")
+            st.subheader("💬 Gửi hóa đơn qua Zalo hoặc Email")
             if not calc_df.empty:
                 ds_phong = calc_df["Phòng"].tolist()
                 phong_chon = st.selectbox("Chọn phòng cần gửi hóa đơn:", ds_phong)
                 row_p = calc_df[calc_df["Phòng"] == phong_chon].iloc[0]
-                msg = f"""📢 THÔNG BÁO TIỀN PHÒNG XÓM TRỌ MINH QUÂN - KỲ {thang_ghi}
-🏠 Phòng: {row_p['Phòng']} ({row_p['Khách thuê']})
-------------------------
-• Tiền thuê phòng: {row_p['Tiền phòng']:,.0f} đ
-• Chỉ số điện: {row_p['Điện cũ']:,.0f} ➔ {row_p['Điện mới']:,.0f} ({row_p['Số kWh']:,.0f} kWh)
-• Tiền điện ({gia_dien:,.0f}đ/kWh): {row_p['Tiền điện']:,.0f} đ
-• Tiền nước: {row_p['Tiền nước']:,.0f} đ
-• Tiền rác: {row_p['Tiền rác']:,.0f} đ
-• Phí an ninh: {row_p['An ninh']:,.0f} đ
-------------------------
-💰 TỔNG CỘNG CẦN THANH TOÁN: {row_p['Tổng cộng']:,.0f} đ
-🔑 Mật khẩu tra cứu online của phòng: {row_p['Mật khẩu phòng']}
-Anh/chị vui lòng thanh toán sớm giúp Xóm Trọ Minh Quân nhé. Xin cảm ơn!"""
-                st.info("Bấm vào biểu tượng Copy ở góc trên bên phải khung dưới đây để dán gửi Zalo:")
+                msg = build_invoice_message(row_p, thang_ghi, gia_dien)
+
+                email_hien_tai = str(row_p.get("Email khách", "")).strip()
+                if email_hien_tai:
+                    if st.button(f"📧 Gửi ngay qua Email tới {email_hien_tai}", type="primary", use_container_width=True):
+                        subj = f"[Xóm Trọ Minh Quân] Thông báo tiền phòng kỳ {thang_ghi} - {row_p['Phòng']}"
+                        ok, err = send_invoice_email(email_hien_tai, subj, msg)
+                        if ok:
+                            st.success(f"✅ Đã gửi hóa đơn cho {row_p['Phòng']} thành công!")
+                        else:
+                            st.error(f"❌ Lỗi gửi email: {err}")
+                else:
+                    st.caption("ℹ️ Phòng này chưa nhập Email khách (bạn có thể điền ở bảng Tab 1 để gửi tự động).")
+
+                st.info("Hoặc bấm biểu tượng Copy ở góc phải khung dưới để dán gửi Zalo:")
                 st.code(msg, language="text")
 
     with tab3:
         hist_df = load_history()
         if not hist_df.empty:
             st.subheader("📈 Biểu đồ doanh thu qua các kỳ đã chốt")
-            cols_to_plot = [c for c in ["Tiền phòng", "Tiền điện", "Dịch vụ (Nước+Rác+AN)"] if c in hist_df.columns]
+            cols_to_plot = [c for c in ["Tiền phòng", "Tiền điện", "Dịch vụ (Nước+Rác+AN)", "Tiền khác"] if c in hist_df.columns]
             if cols_to_plot and "Kỳ thu" in hist_df.columns:
                 rev_by_month = hist_df.groupby("Kỳ thu", sort=False)[cols_to_plot].sum()
                 st.bar_chart(rev_by_month)
@@ -676,9 +826,6 @@ Anh/chị vui lòng thanh toán sớm giúp Xóm Trọ Minh Quân nhé. Xin cả
         else:
             st.info("Chưa có dữ liệu lịch sử nào được chốt sổ. Hãy bấm nút 'Chốt sổ tháng này' ở Tab 1 để lưu kỳ đầu tiên.")
 
-# ==========================================
-# ĐIỀU HƯỚNG CHÍNH CỦA ỨNG DỤNG
-# ==========================================
 df_rooms_all = load_rooms()
 gia_dien_cfg, thang_ghi_cfg = load_config()
 
