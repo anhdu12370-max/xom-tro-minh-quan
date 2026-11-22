@@ -163,19 +163,37 @@ def render_notification_bell_and_history(df_fb, is_admin=True, room_filter=None)
                 """, unsafe_allow_html=True)
 
 def load_feedback():
-    df_fb = read_table("feedback", FEEDBACK_FILE)
     expected_cols = ["Thời gian", "Phòng", "Khách thuê", "Nội dung phản hồi", "Trạng thái", "Phản hồi của chủ trọ"]
+    if "last_good_fb" not in st.session_state:
+        st.session_state.last_good_fb = None
+    df_fb = read_table("feedback", FEEDBACK_FILE)
     if df_fb is None:
+        if st.session_state.last_good_fb is not None:
+            return st.session_state.last_good_fb.copy()
         return pd.DataFrame(columns=expected_cols)
     if not df_fb.empty:
         for c in expected_cols:
             if c not in df_fb.columns:
                 df_fb[c] = ""
-        return df_fb[expected_cols].fillna("").astype(str)
-    return pd.DataFrame(columns=expected_cols)
+        cleaned = df_fb[expected_cols].fillna("").astype(str)
+        st.session_state.last_good_fb = cleaned.copy()
+        return cleaned
+    # Nếu sheet thực sự rỗng nhưng vừa lưu dữ liệu trong phiên này, giữ lại bản ghi vừa lưu để không bị mất đột ngột
+    if st.session_state.last_good_fb is not None and not st.session_state.last_good_fb.empty:
+        return st.session_state.last_good_fb.copy()
+    empty_df = pd.DataFrame(columns=expected_cols)
+    st.session_state.last_good_fb = empty_df.copy()
+    return empty_df
 
 def save_feedback(df_fb):
-    write_table(df_fb, "feedback", FEEDBACK_FILE)
+    expected_cols = ["Thời gian", "Phòng", "Khách thuê", "Nội dung phản hồi", "Trạng thái", "Phản hồi của chủ trọ"]
+    cleaned = df_fb.copy()
+    for c in expected_cols:
+        if c not in cleaned.columns:
+            cleaned[c] = ""
+    cleaned = cleaned[expected_cols].fillna("").astype(str)
+    st.session_state.last_good_fb = cleaned.copy()
+    write_table(cleaned, "feedback", FEEDBACK_FILE)
 
 def send_admin_reply_email(to_email, room_name, tenant_name, issue_text, status_text, reply_text):
     sender_email, app_password = get_email_credentials()
@@ -547,6 +565,8 @@ if "role" not in st.session_state:
     st.session_state.role = None
 if "customer_room" not in st.session_state:
     st.session_state.customer_room = None
+if "fb_editor_key" not in st.session_state:
+    st.session_state.fb_editor_key = 0
 
 # ==========================================
 # GIAO DIỆN MÀU SẮC SINH ĐỘNG & HIỆN ĐẠI
@@ -1666,7 +1686,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
             st.caption("💡 Bạn có thể sửa trực tiếp **Trạng thái** hoặc gõ nội dung vào cột **Phản hồi của chủ trọ** ngay trong bảng dưới đây (khách sẽ thấy ngay khi đăng nhập):")
             edited_fb = st.data_editor(
                 df_fb_view,
-                key="fb_editor",
+                key=f"fb_editor_{st.session_state.fb_editor_key}",
                 num_rows="fixed",
                 use_container_width=True,
                 column_config={
@@ -1686,6 +1706,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
             )
             if not edited_fb.equals(df_fb_view):
                 save_feedback(edited_fb)
+                st.session_state.fb_editor_key += 1
                 st.toast("Đã lưu phản hồi của chủ trọ!", icon="✅")
                 st.rerun()
 
@@ -1733,6 +1754,7 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                     df_fb_upd.at[sel_idx, "Trạng thái"] = new_status_val
                     df_fb_upd.at[sel_idx, "Phản hồi của chủ trọ"] = reply_text_val.strip()
                     save_feedback(df_fb_upd)
+                    st.session_state.fb_editor_key += 1
 
                     if send_mail_chk:
                         ok_m, msg_m = send_admin_reply_email(
