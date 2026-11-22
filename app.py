@@ -16,6 +16,66 @@ ROOMS_FILE = "rooms.csv"
 HISTORY_FILE = "history.csv"
 CONFIG_FILE = "config.csv"
 
+FEEDBACK_FILE = "feedback.csv"
+
+def load_feedback():
+    df_fb = read_table("feedback", FEEDBACK_FILE)
+    expected_cols = ["Thời gian", "Phòng", "Khách thuê", "Nội dung phản hồi", "Trạng thái"]
+    if not df_fb.empty:
+        for c in expected_cols:
+            if c not in df_fb.columns:
+                df_fb[c] = ""
+        return df_fb[expected_cols]
+    return pd.DataFrame(columns=expected_cols)
+
+def save_feedback(df_fb):
+    write_table(df_fb, "feedback", FEEDBACK_FILE)
+
+def send_feedback_to_admin(room_name, tenant_name, feedback_text):
+    sender_email, app_password = get_email_credentials()
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    # 1. Lưu phản hồi vào sheet riêng "feedback" trên Google Sheets (không đụng vào sheet rooms/history)
+    df_fb = load_feedback()
+    new_fb = pd.DataFrame([{
+        "Thời gian": now_str,
+        "Phòng": room_name,
+        "Khách thuê": tenant_name,
+        "Nội dung phản hồi": feedback_text,
+        "Trạng thái": "Mới gửi"
+    }])
+    save_feedback(pd.concat([new_fb, df_fb], ignore_index=True))
+
+    # 2. Gửi email thông báo trực tiếp tới hộp thư của Chủ trọ (sender_email)
+    if not sender_email or not app_password:
+        return True, "Đã lưu phản hồi lên hệ thống (chưa gửi email vì chưa cấu hình [email])."
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = f"Hệ Thống Xóm Trọ Minh Quân <{sender_email}>"
+        msg["To"] = sender_email
+        msg["Subject"] = f"🔔 [Phản hồi mới] {room_name} ({tenant_name}) - Xóm Trọ Minh Quân"
+
+        body = f"""🔔 THÔNG BÁO PHẢN HỒI MỚI TỪ KHÁCH THUÊ
+🏠 Phòng: {room_name}
+👤 Khách thuê: {tenant_name}
+🕒 Thời gian gửi: {now_str}
+------------------------
+📝 NỘI DUNG PHẢN HỒI / BÁO SỰ CỐ:
+{feedback_text}
+------------------------
+🌐 Chủ trọ có thể xem và cập nhật trạng thái xử lý trực tiếp tại trang quản trị: {DEFAULT_APP_URL}
+"""
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
+            server.login(sender_email, app_password)
+            server.sendmail(sender_email, sender_email, msg.as_string())
+        return True, "Đã gửi thông báo qua Email cho chủ trọ thành công!"
+    except Exception as e:
+        return True, f"Đã lưu phản hồi trên web nhưng gửi email gặp lỗi: {e}"
+
+
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "minhquan2026"
 DEFAULT_APP_URL = "https://xom-tro-minh-quan-pxg4pzand8apstxfa7aw66.streamlit.app"
@@ -636,6 +696,34 @@ def render_customer_view(df_rooms, gia_dien, thang_ghi):
         st.info("📷 Chủ trọ chưa tải ảnh chụp công tơ điện kỳ này lên hệ thống.")
 
     st.divider()
+    st.subheader("💬 Gửi phản hồi / Báo sự cố tới Chủ trọ")
+    st.caption("Nếu phòng có vấn đề về điện, nước, thiết bị hoặc thắc mắc hóa đơn, anh/chị nhập nội dung bên dưới — hệ thống sẽ gửi thông báo ngay tới Email của chủ trọ.")
+    with st.form(key=f"feedback_form_{my_room_name}", clear_on_submit=True):
+        fb_content = st.text_area(
+            "Nội dung phản hồi / yêu cầu hỗ trợ:",
+            placeholder="Ví dụ: Vòi nước nhà vệ sinh bị rỉ, bóng đèn hành lang cháy, hoặc thắc mắc chỉ số điện kỳ này...",
+            height=110
+        )
+        submitted_fb = st.form_submit_button("📩 Gửi phản hồi ngay cho Chủ trọ", type="primary", use_container_width=True)
+        if submitted_fb:
+            if not fb_content.strip():
+                st.warning("Vui lòng nhập nội dung phản hồi trước khi bấm gửi!")
+            else:
+                with st.spinner("Đang gửi phản hồi tới chủ trọ..."):
+                    ok_fb, msg_fb = send_feedback_to_admin(my_room_name, row["Khách thuê"], fb_content.strip())
+                if ok_fb:
+                    st.success(f"✅ {msg_fb}")
+                    st.toast("Đã gửi phản hồi tới chủ trọ!", icon="📩")
+
+    # Hiển thị lịch sử phản hồi của riêng phòng này để khách theo dõi trạng thái xử lý
+    all_fb_cus = load_feedback()
+    if not all_fb_cus.empty:
+        my_fb = all_fb_cus[all_fb_cus["Phòng"] == my_room_name]
+        if not my_fb.empty:
+            with st.expander(f"📋 Lịch sử phản hồi đã gửi của {my_room_name} ({len(my_fb)})", expanded=False):
+                st.dataframe(my_fb[["Thời gian", "Nội dung phản hồi", "Trạng thái"]], use_container_width=True, hide_index=True)
+
+    st.divider()
     st.subheader(f"🗂️ Lịch sử đóng tiền & tiêu thụ điện của riêng {my_room_name}")
     hist_df = load_history()
     if not hist_df.empty and "Phòng" in hist_df.columns:
@@ -913,11 +1001,16 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 del_idx = room_options[selected_del_label]
                 confirm_delete_room_dialog(del_idx, df.iloc[del_idx])
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    df_fb_admin = load_feedback()
+    new_fb_count = int((df_fb_admin["Trạng thái"] == "Mới gửi").sum()) if not df_fb_admin.empty else 0
+    fb_tab_label = f"💬 Phản hồi khách ({new_fb_count} mới)" if new_fb_count > 0 else "💬 Phản hồi khách"
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📋 Nhập số điện & Thu tiền",
         "📸 Ảnh đồng hồ từng phòng",
         "📊 Biểu đồ & Gửi Zalo / Email",
-        "🗂️ Lịch sử các tháng trước"
+        "🗂️ Lịch sử các tháng trước",
+        fb_tab_label
     ])
 
     with tab1:
@@ -1174,6 +1267,35 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
             )
         else:
             st.info("Chưa có dữ liệu lịch sử nào được chốt sổ.")
+
+    with tab5:
+        st.subheader("💬 Danh sách phản hồi & báo sự cố từ khách thuê")
+        df_fb_view = load_feedback()
+        if df_fb_view.empty:
+            st.info("Chưa có phản hồi nào từ các phòng.")
+        else:
+            if new_fb_count > 0:
+                st.warning(f"🔔 Bạn có **{new_fb_count} phản hồi mới** chưa đánh dấu đã xử lý!")
+            edited_fb = st.data_editor(
+                df_fb_view,
+                key="fb_editor",
+                num_rows="fixed",
+                use_container_width=True,
+                column_config={
+                    "Thời gian": st.column_config.TextColumn(disabled=True),
+                    "Phòng": st.column_config.TextColumn(disabled=True),
+                    "Khách thuê": st.column_config.TextColumn(disabled=True),
+                    "Nội dung phản hồi": st.column_config.TextColumn(width="large", disabled=True),
+                    "Trạng thái": st.column_config.SelectboxColumn(
+                        options=["Mới gửi", "Đang xử lý", "Đã xử lý xong"],
+                        required=True
+                    )
+                }
+            )
+            if not edited_fb.equals(df_fb_view):
+                save_feedback(edited_fb)
+                st.toast("Đã cập nhật trạng thái phản hồi!", icon="✅")
+                st.rerun()
 
 df_rooms_all = load_rooms()
 gia_dien_cfg, thang_ghi_cfg = load_config()
