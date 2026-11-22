@@ -20,16 +20,51 @@ FEEDBACK_FILE = "feedback.csv"
 
 def load_feedback():
     df_fb = read_table("feedback", FEEDBACK_FILE)
-    expected_cols = ["Thời gian", "Phòng", "Khách thuê", "Nội dung phản hồi", "Trạng thái"]
+    expected_cols = ["Thời gian", "Phòng", "Khách thuê", "Nội dung phản hồi", "Trạng thái", "Phản hồi của chủ trọ"]
     if not df_fb.empty:
         for c in expected_cols:
             if c not in df_fb.columns:
                 df_fb[c] = ""
-        return df_fb[expected_cols]
+        return df_fb[expected_cols].fillna("").astype(str)
     return pd.DataFrame(columns=expected_cols)
 
 def save_feedback(df_fb):
     write_table(df_fb, "feedback", FEEDBACK_FILE)
+
+def send_admin_reply_email(to_email, room_name, tenant_name, issue_text, status_text, reply_text):
+    sender_email, app_password = get_email_credentials()
+    if not sender_email or not app_password:
+        return False, "Chưa cấu hình [email] trong Secrets."
+    if not to_email or "@" not in str(to_email):
+        return False, "Phòng này chưa có địa chỉ Email khách."
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = f"Xóm Trọ Minh Quân <{sender_email}>"
+        msg["To"] = str(to_email).strip()
+        msg["Subject"] = f"💬 [Phản hồi từ Chủ trọ] {room_name} - Xóm Trọ Minh Quân"
+
+        reply_section = reply_text.strip() if str(reply_text).strip() else "(Chủ trọ đã cập nhật trạng thái xử lý yêu cầu của bạn)"
+        body = f"""📢 THÔNG BÁO PHẢN HỒI TỪ CHỦ TRỌ XÓM TRỌ MINH QUÂN
+📍 Địa chỉ: Thôn Mẫn Xá - Xã Yên Phong - Tỉnh Bắc Ninh
+🏠 Phòng: {room_name} ({tenant_name})
+📌 Trạng thái xử lý: {status_text}
+------------------------
+📝 Nội dung bạn đã gửi:
+{issue_text}
+
+💬 Phản hồi của Chủ trọ:
+{reply_section}
+------------------------
+🌐 Bạn có thể theo dõi trực tiếp tại: {DEFAULT_APP_URL}
+Cảm ơn anh/chị đã thông báo cho Xóm Trọ Minh Quân!"""
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
+            server.login(sender_email, app_password)
+            server.sendmail(sender_email, str(to_email).strip(), msg.as_string())
+        return True, "Đã gửi email thông báo cho khách thành công!"
+    except Exception as e:
+        return False, str(e)
 
 def send_feedback_to_admin(room_name, tenant_name, feedback_text):
     sender_email, app_password = get_email_credentials()
@@ -42,7 +77,8 @@ def send_feedback_to_admin(room_name, tenant_name, feedback_text):
         "Phòng": room_name,
         "Khách thuê": tenant_name,
         "Nội dung phản hồi": feedback_text,
-        "Trạng thái": "Mới gửi"
+        "Trạng thái": "Mới gửi",
+        "Phản hồi của chủ trọ": ""
     }])
     save_feedback(pd.concat([new_fb, df_fb], ignore_index=True))
 
@@ -447,6 +483,48 @@ st.markdown("""
         margin-bottom: 6px;
     }
 
+
+    /* Chuông thông báo đỏ nổi ở góc trên bên phải màn hình khi có phản hồi mới */
+    @keyframes bell-shake {
+        0%, 100% { transform: rotate(0deg); }
+        15% { transform: rotate(14deg); }
+        30% { transform: rotate(-14deg); }
+        45% { transform: rotate(10deg); }
+        60% { transform: rotate(-10deg); }
+        75% { transform: rotate(4deg); }
+    }
+    .floating-bell-alert {
+        position: fixed;
+        top: 64px;
+        right: 22px;
+        z-index: 999999;
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        color: #ffffff;
+        padding: 10px 16px;
+        border-radius: 999px;
+        box-shadow: 0 8px 22px rgba(220, 38, 38, 0.45);
+        border: 2px solid #ffffff;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 800;
+        font-size: 13.5px;
+        cursor: default;
+    }
+    .floating-bell-icon {
+        display: inline-block;
+        font-size: 18px;
+        animation: bell-shake 1.4s infinite;
+    }
+    .floating-bell-badge {
+        background-color: #ffffff;
+        color: #dc2626;
+        font-weight: 900;
+        font-size: 12px;
+        padding: 2px 8px;
+        border-radius: 999px;
+    }
+
     /* Tùy chỉnh Tabs nổi bật */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
@@ -550,10 +628,35 @@ def save_history(df_h):
     write_table(df_h, "history", HISTORY_FILE)
 
 # ==========================================
-# MÀN HÌNH ĐĂNG NHẬP
+# MÀN HÌNH ĐĂNG NHẬP (HÌNH NỀN DẠNG DÃY PHÒNG TRỌ ẤM ÁP & HIỆN ĐẠI)
 # ==========================================
 def render_login_screen(df_rooms):
-    col_left, col_mid, col_right = st.columns([1, 1.5, 1])
+    st.markdown("""
+    <style>
+        /* Hình nền kiến trúc dãy nhà trọ hiện đại, ấm áp phủ toàn màn hình khi đăng nhập */
+        .stApp {
+            background-image:
+                linear-gradient(135deg, rgba(15, 23, 42, 0.52) 0%, rgba(30, 58, 138, 0.42) 50%, rgba(6, 78, 59, 0.48) 100%),
+                url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 900'%3E%3Cdefs%3E%3ClinearGradient id='sky' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%2338bdf8'/%3E%3Cstop offset='55%25' stop-color='%23bae6fd'/%3E%3Cstop offset='100%25' stop-color='%23fef3c7'/%3E%3C/linearGradient%3E%3ClinearGradient id='wall1' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%23fffbeb'/%3E%3Cstop offset='100%25' stop-color='%23fde68a'/%3E%3C/linearGradient%3E%3ClinearGradient id='wall2' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%23f8fafc'/%3E%3Cstop offset='100%25' stop-color='%23e2e8f0'/%3E%3C/linearGradient%3E%3ClinearGradient id='roof' x1='0' y1='0' x2='1' y2='0'%3E%3Cstop offset='0%25' stop-color='%231e3a8a'/%3E%3Cstop offset='100%25' stop-color='%230284c7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='1600' height='900' fill='url(%23sky)'/%3E%3Ccircle cx='1320' cy='160' r='70' fill='%23fde047' opacity='0.85'/%3E%3C!-- Mây trời --%3E%3Cg fill='%23ffffff' opacity='0.75'%3E%3Ccircle cx='260' cy='150' r='36'/%3E%3Ccircle cx='300' cy='140' r='46'/%3E%3Ccircle cx='348' cy='152' r='34'/%3E%3Ccircle cx='880' cy='115' r='30'/%3E%3Ccircle cx='918' cy='108' r='40'/%3E%3Ccircle cx='958' cy='118' r='28'/%3E%3C/g%3E%3C!-- Sân gạch & cây xanh --%3E%3Crect x='0' y='730' width='1600' height='170' fill='%23cbd5e1'/%3E%3Crect x='0' y='720' width='1600' height='16' fill='%2394a3b8'/%3E%3C!-- Tòa dãy phòng trọ 2 tầng bên trái & phải --%3E%3Crect x='110' y='250' width='1380' height='470' rx='12' fill='url(%23wall2)' stroke='%2394a3b8' stroke-width='3'/%3E%3Cpolygon points='85,255 800,145 1515,255' fill='url(%23roof)'/%3E%3Crect x='110' y='480' width='1380' height='18' fill='%23334155'/%3E%3C!-- Lan can tầng 2 --%3E%3Crect x='110' y='432' width='1380' height='8' fill='%23475569'/%3E%3Cg stroke='%2364748b' stroke-width='4'%3E%3Cline x1='150' y1='432' x2='150' y2='480'/%3E%3Cline x1='210' y1='432' x2='210' y2='480'/%3E%3Cline x1='270' y1='432' x2='270' y2='480'/%3E%3Cline x1='330' y1='432' x2='330' y2='480'/%3E%3Cline x1='390' y1='432' x2='390' y2='480'/%3E%3Cline x1='450' y1='432' x2='450' y2='480'/%3E%3Cline x1='1150' y1='432' x2='1150' y2='480'/%3E%3Cline x1='1210' y1='432' x2='1210' y2='480'/%3E%3Cline x1='1270' y1='432' x2='1270' y2='480'/%3E%3Cline x1='1330' y1='432' x2='1330' y2='480'/%3E%3Cline x1='1390' y1='432' x2='1390' y2='480'/%3E%3Cline x1='1450' y1='432' x2='1450' y2='480'/%3E%3C/g%3E%3C!-- Các ô cửa phòng trọ Tầng 2 (sáng đèn ấm áp) --%3E%3Cg%3E%3Crect x='160' y='295' width='75' height='137' rx='4' fill='%2392400e'/%3E%3Crect x='255' y='310' width='95' height='80' rx='6' fill='%23fef08a' stroke='%230284c7' stroke-width='4'/%3E%3Crect x='410' y='295' width='75' height='137' rx='4' fill='%2392400e'/%3E%3Crect x='505' y='310' width='95' height='80' rx='6' fill='%23fef08a' stroke='%230284c7' stroke-width='4'/%3E%3Crect x='1000' y='295' width='75' height='137' rx='4' fill='%2392400e'/%3E%3Crect x='1095' y='310' width='95' height='80' rx='6' fill='%23fef08a' stroke='%230284c7' stroke-width='4'/%3E%3Crect x='1250' y='295' width='75' height='137' rx='4' fill='%2392400e'/%3E%3Crect x='1345' y='310' width='95' height='80' rx='6' fill='%23fef08a' stroke='%230284c7' stroke-width='4'/%3E%3C/g%3E%3C!-- Các ô cửa phòng trọ Tầng 1 --%3E%3Cg%3E%3Crect x='160' y='535' width='80' height='185' rx='4' fill='%2378350f'/%3E%3Crect x='260' y='550' width='95' height='85' rx='6' fill='%23fde047' stroke='%230284c7' stroke-width='4'/%3E%3Crect x='410' y='535' width='80' height='185' rx='4' fill='%2378350f'/%3E%3Crect x='510' y='550' width='95' height='85' rx='6' fill='%23fde047' stroke='%230284c7' stroke-width='4'/%3E%3Crect x='1000' y='535' width='80' height='185' rx='4' fill='%2378350f'/%3E%3Crect x='1100' y='550' width='95' height='85' rx='6' fill='%23fde047' stroke='%230284c7' stroke-width='4'/%3E%3Crect x='1250' y='535' width='80' height='185' rx='4' fill='%2378350f'/%3E%3Crect x='1350' y='550' width='95' height='85' rx='6' fill='%23fde047' stroke='%230284c7' stroke-width='4'/%3E%3C/g%3E%3C!-- Cây xanh trang trí hai bên sân trọ --%3E%3Cg%3E%3Crect x='52' y='620' width='16' height='100' fill='%2378350f'/%3E%3Ccircle cx='60' cy='590' r='48' fill='%2310b981'/%3E%3Ccircle cx='35' cy='615' r='34' fill='%23059669'/%3E%3Ccircle cx='85' cy='615' r='34' fill='%23059669'/%3E%3Crect x='1532' y='620' width='16' height='100' fill='%2378350f'/%3E%3Ccircle cx='1540' cy='590' r='48' fill='%2310b981'/%3E%3Ccircle cx='1515' cy='615' r='34' fill='%23059669'/%3E%3Ccircle cx='1565' cy='615' r='34' fill='%23059669'/%3E%3C/g%3E%3C/svg%3E");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }
+
+        /* Khung đăng nhập kính mờ (Glassmorphism) nổi bật trên nền dãy phòng trọ */
+        [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(2) {
+            background: rgba(255, 255, 255, 0.90);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            padding: 26px 28px 30px 28px;
+            border-radius: 24px;
+            box-shadow: 0 20px 50px rgba(15, 23, 42, 0.35);
+            border: 1.5px solid rgba(255, 255, 255, 0.85);
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    col_left, col_mid, col_right = st.columns([1, 1.55, 1])
     with col_mid:
         st.markdown("""
         <div class="hero-banner" style="text-align: center;">
@@ -715,13 +818,18 @@ def render_customer_view(df_rooms, gia_dien, thang_ghi):
                     st.success(f"✅ {msg_fb}")
                     st.toast("Đã gửi phản hồi tới chủ trọ!", icon="📩")
 
-    # Hiển thị lịch sử phản hồi của riêng phòng này để khách theo dõi trạng thái xử lý
+    # Hiển thị lịch sử phản hồi & câu trả lời của chủ trọ cho riêng phòng này
     all_fb_cus = load_feedback()
     if not all_fb_cus.empty:
         my_fb = all_fb_cus[all_fb_cus["Phòng"] == my_room_name]
         if not my_fb.empty:
-            with st.expander(f"📋 Lịch sử phản hồi đã gửi của {my_room_name} ({len(my_fb)})", expanded=False):
-                st.dataframe(my_fb[["Thời gian", "Nội dung phản hồi", "Trạng thái"]], use_container_width=True, hide_index=True)
+            has_admin_reply = (my_fb["Phản hồi của chủ trọ"].astype(str).str.strip() != "").any()
+            with st.expander(f"📋 Lịch sử phản hồi & Trả lời từ Chủ trọ ({len(my_fb)})", expanded=has_admin_reply):
+                st.dataframe(
+                    my_fb[["Thời gian", "Nội dung phản hồi", "Trạng thái", "Phản hồi của chủ trọ"]],
+                    use_container_width=True,
+                    hide_index=True
+                )
 
     st.divider()
     st.subheader(f"🗂️ Lịch sử đóng tiền & tiêu thụ điện của riêng {my_room_name}")
@@ -921,6 +1029,19 @@ def confirm_close_month_dialog(df_rooms, calc_df, thang_ghi, gia_dien):
 # GIAO DIỆN QUẢN TRỊ CHỦ TRỌ (ADMIN)
 # ==========================================
 def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
+    df_fb_admin = load_feedback()
+    new_fb_count = int((df_fb_admin["Trạng thái"] == "Mới gửi").sum()) if not df_fb_admin.empty else 0
+
+    if new_fb_count > 0:
+        latest_rooms = ", ".join(df_fb_admin[df_fb_admin["Trạng thái"] == "Mới gửi"]["Phòng"].astype(str).unique().tolist())
+        st.markdown(f"""
+        <div class="floating-bell-alert" title="Có phản hồi mới từ khách thuê">
+            <span class="floating-bell-icon">🔔</span>
+            <span>Phản hồi mới ({latest_rooms})</span>
+            <span class="floating-bell-badge">{new_fb_count}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
     storage_mode = "☁️ Google Sheets (Cloud)" if get_gsheet_client() is not None else "💻 File CSV trên máy tính"
     sender_mail, _ = get_email_credentials()
     mail_status = f"📧 Gmail tự động: **{sender_mail}**" if sender_mail else "⚠️ Chưa cấu hình Gmail tự động"
@@ -1001,8 +1122,6 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                 del_idx = room_options[selected_del_label]
                 confirm_delete_room_dialog(del_idx, df.iloc[del_idx])
 
-    df_fb_admin = load_feedback()
-    new_fb_count = int((df_fb_admin["Trạng thái"] == "Mới gửi").sum()) if not df_fb_admin.empty else 0
     fb_tab_label = f"💬 Phản hồi khách ({new_fb_count} mới)" if new_fb_count > 0 else "💬 Phản hồi khách"
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -1269,13 +1388,15 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
             st.info("Chưa có dữ liệu lịch sử nào được chốt sổ.")
 
     with tab5:
-        st.subheader("💬 Danh sách phản hồi & báo sự cố từ khách thuê")
+        st.subheader("💬 Danh sách phản hồi & Trả lời khách thuê")
         df_fb_view = load_feedback()
         if df_fb_view.empty:
             st.info("Chưa có phản hồi nào từ các phòng.")
         else:
             if new_fb_count > 0:
-                st.warning(f"🔔 Bạn có **{new_fb_count} phản hồi mới** chưa đánh dấu đã xử lý!")
+                st.warning(f"🔔 Bạn có **{new_fb_count} phản hồi mới** chưa xử lý!")
+
+            st.caption("💡 Bạn có thể sửa trực tiếp **Trạng thái** hoặc gõ nội dung vào cột **Phản hồi của chủ trọ** ngay trong bảng dưới đây (khách sẽ thấy ngay khi đăng nhập):")
             edited_fb = st.data_editor(
                 df_fb_view,
                 key="fb_editor",
@@ -1285,17 +1406,83 @@ def render_admin_view(df, gia_dien_saved, thang_ghi_saved):
                     "Thời gian": st.column_config.TextColumn(disabled=True),
                     "Phòng": st.column_config.TextColumn(disabled=True),
                     "Khách thuê": st.column_config.TextColumn(disabled=True),
-                    "Nội dung phản hồi": st.column_config.TextColumn(width="large", disabled=True),
+                    "Nội dung phản hồi": st.column_config.TextColumn(width="medium", disabled=True),
                     "Trạng thái": st.column_config.SelectboxColumn(
                         options=["Mới gửi", "Đang xử lý", "Đã xử lý xong"],
                         required=True
+                    ),
+                    "Phản hồi của chủ trọ": st.column_config.TextColumn(
+                        width="large",
+                        help="Nhập câu trả lời của bạn để khách thuê xem được trên web"
                     )
                 }
             )
             if not edited_fb.equals(df_fb_view):
                 save_feedback(edited_fb)
-                st.toast("Đã cập nhật trạng thái phản hồi!", icon="✅")
+                st.toast("Đã lưu phản hồi của chủ trọ!", icon="✅")
                 st.rerun()
+
+            st.divider()
+            st.subheader("📩 Trả lời nhanh & Gửi Email thông báo tình hình cho khách")
+            fb_options = {
+                f"[{r['Thời gian']}] {r['Phòng']} ({r['Khách thuê']}) — {str(r['Nội dung phản hồi'])[:45]}...": idx
+                for idx, r in df_fb_view.iterrows()
+            }
+            selected_fb_label = st.selectbox("Chọn phản hồi cần trả lời & gửi email:", list(fb_options.keys()))
+            sel_idx = fb_options[selected_fb_label]
+            sel_fb_row = df_fb_view.iloc[sel_idx]
+
+            # Lấy email của phòng tương ứng từ bảng df
+            matched_room_info = df[df["Phòng"] == sel_fb_row["Phòng"]]
+            cust_email_found = ""
+            if not matched_room_info.empty:
+                cust_email_found = str(matched_room_info.iloc[0].get("Email khách", "")).strip()
+
+            st.info(f"**Nội dung khách gửi ({sel_fb_row['Phòng']}):** {sel_fb_row['Nội dung phản hồi']}")
+            if cust_email_found:
+                st.caption(f"📧 Email khách thuê đã lưu: **`{cust_email_found}`**")
+            else:
+                st.warning(f"⚠️ **{sel_fb_row['Phòng']}** chưa có địa chỉ Email trong bảng Tab 1 — bạn vẫn có thể lưu phản hồi lên web cho khách xem, hoặc nhập tạm email bên dưới để gửi.")
+
+            with st.form(key=f"admin_reply_form_{sel_idx}"):
+                col_st, col_em = st.columns([1, 1.5])
+                with col_st:
+                    status_opts = ["Mới gửi", "Đang xử lý", "Đã xử lý xong"]
+                    curr_st_idx = status_opts.index(sel_fb_row["Trạng thái"]) if sel_fb_row["Trạng thái"] in status_opts else 1
+                    new_status_val = st.selectbox("Cập nhật trạng thái:", status_opts, index=curr_st_idx)
+                with col_em:
+                    target_email_val = st.text_input("Email nhận thông báo:", value=cust_email_found, placeholder="Nhập email khách nếu chưa có...")
+
+                reply_text_val = st.text_area(
+                    "Nội dung phản hồi gửi khách thuê:",
+                    value=str(sel_fb_row.get("Phản hồi của chủ trọ", "")),
+                    placeholder="Ví dụ: Anh đã gọi thợ qua sửa bóng đèn cầu thang vào 17h chiều nay rồi nhé!",
+                    height=100
+                )
+                send_mail_chk = st.checkbox("📧 Đồng thời gửi Email thông báo tình hình cho khách", value=bool(cust_email_found))
+
+                if st.form_submit_button("💾 Lưu phản hồi & Gửi thông báo", type="primary", use_container_width=True):
+                    df_fb_upd = load_feedback()
+                    df_fb_upd.at[sel_idx, "Trạng thái"] = new_status_val
+                    df_fb_upd.at[sel_idx, "Phản hồi của chủ trọ"] = reply_text_val.strip()
+                    save_feedback(df_fb_upd)
+
+                    if send_mail_chk:
+                        ok_m, msg_m = send_admin_reply_email(
+                            target_email_val,
+                            sel_fb_row["Phòng"],
+                            sel_fb_row["Khách thuê"],
+                            sel_fb_row["Nội dung phản hồi"],
+                            new_status_val,
+                            reply_text_val.strip()
+                        )
+                        if ok_m:
+                            st.success(f"✅ Đã lưu phản hồi lên web và {msg_m}")
+                        else:
+                            st.warning(f"✅ Đã lưu phản hồi lên web cho khách xem, nhưng chưa gửi được email: {msg_m}")
+                    else:
+                        st.success("✅ Đã lưu nội dung phản hồi lên web — khách đăng nhập sẽ thấy ngay!")
+                    st.rerun()
 
 df_rooms_all = load_rooms()
 gia_dien_cfg, thang_ghi_cfg = load_config()
